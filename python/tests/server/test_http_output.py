@@ -14,6 +14,9 @@ from .conftest import uses_predictor, uses_predictor_with_client_options
 #     assert resp.status_code == 500
 
 
+responses.mock.target = "cog._vendor.requests.adapters.HTTPAdapter.send"
+
+
 @uses_predictor("output_file")
 def test_output_file(client, match):
     res = client.post("/predictions")

@@ -6,6 +6,8 @@ import pytest
 import responses
 from cog.types import URLFile, get_filename_from_url, get_filename_from_urlopen
 
+responses.mock.target = "cog._vendor.requests.adapters.HTTPAdapter.send"
+
 
 @responses.activate
 def test_urlfile_acts_like_response():
