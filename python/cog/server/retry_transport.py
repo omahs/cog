@@ -3,7 +3,7 @@ import random
 from datetime import datetime
 from typing import Iterable, Mapping, Optional, Union
 
-import httpx
+from .._vendor import httpx
 
 
 # Adapted from https://github.com/encode/httpx/issues/108#issuecomment-1132753155

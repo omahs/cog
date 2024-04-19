@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Awaitable, Coroutine, Optional, TypeVar
 import pytest
 
 pytest.skip(allow_module_level=True)
-from attrs import define
+from cog._vendor.attrs import define
 from cog.server.eventtypes import (
     Done,
     Heartbeat,

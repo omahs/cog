@@ -4,7 +4,7 @@ import tempfile
 import cog
 import numpy as np
 from cog.json import make_encodeable
-from pydantic import BaseModel
+from cog._vendor.pydantic import BaseModel
 
 
 def test_make_encodeable_recursively_encodes_tuples():

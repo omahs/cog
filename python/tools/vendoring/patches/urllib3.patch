@@ -1,0 +1,117 @@
+--- ./python/cog/_vendor/urllib3/contrib/emscripten/__init__.py	2024-04-19 17:57:49
++++ ./python/cog/_vendor/urllib3/contrib/emscripten/__init__.py.new	2024-04-19 18:00:46
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-import urllib3.connection
++import urllib3.connection as urllib3_connection
+ 
+ from ...connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+ from .connection import EmscriptenHTTPConnection, EmscriptenHTTPSConnection
+@@ -12,5 +12,5 @@
+     # if it isn't ignored
+     HTTPConnectionPool.ConnectionCls = EmscriptenHTTPConnection
+     HTTPSConnectionPool.ConnectionCls = EmscriptenHTTPSConnection
+-    urllib3.connection.HTTPConnection = EmscriptenHTTPConnection  # type: ignore[misc,assignment]
+-    urllib3.connection.HTTPSConnection = EmscriptenHTTPSConnection  # type: ignore[misc,assignment]
++    urllib3_connection.HTTPConnection = EmscriptenHTTPConnection  # type: ignore[misc,assignment]
++    urllib3_connection.HTTPSConnection = EmscriptenHTTPSConnection  # type: ignore[misc,assignment]
+--- ./python/cog/_vendor/urllib3/contrib/pyopenssl.py	2024-04-19 18:04:21
++++ ./python/cog/_vendor/urllib3/contrib/pyopenssl.py.new	2024-04-19 18:05:27
+@@ -28,8 +28,8 @@
+ .. code-block:: python
+ 
+     try:
+-        import urllib3.contrib.pyopenssl
+-        urllib3.contrib.pyopenssl.inject_into_urllib3()
++        import urllib3_contrib_pyopenssl
++        urllib3_contrib_pyopenssl.inject_into_urllib3()
+     except ImportError:
+         pass
+ 
+--- ./python/cog/_vendor/urllib3/http2.py	2024-04-19 18:06:06
++++ ./python/cog/_vendor/urllib3/http2.py.new	2024-04-19 18:07:46
+@@ -8,8 +8,8 @@
+ import h2.connection  # type: ignore[import-untyped]
+ import h2.events  # type: ignore[import-untyped]
+ 
+-import urllib3.connection
+-import urllib3.util.ssl_
++import urllib3.connection as urllib3_connection
++import urllib3.util.ssl_ as urllib3_util_ssl_
+ from urllib3.response import BaseHTTPResponse
+ 
+ from ._collections import HTTPHeaderDict
+@@ -216,14 +216,14 @@
+ 
+ def inject_into_urllib3() -> None:
+     HTTPSConnectionPool.ConnectionCls = HTTP2Connection
+-    urllib3.connection.HTTPSConnection = HTTP2Connection  # type: ignore[misc]
++    urllib3_connection.HTTPSConnection = HTTP2Connection  # type: ignore[misc]
+ 
+     # TODO: Offer 'http/1.1' as well, but for testing purposes this is handy.
+-    urllib3.util.ssl_.ALPN_PROTOCOLS = ["h2"]
++    urllib3_util_ssl_.ALPN_PROTOCOLS = ["h2"]
+ 
+ 
+ def extract_from_urllib3() -> None:
+     HTTPSConnectionPool.ConnectionCls = orig_HTTPSConnection
+-    urllib3.connection.HTTPSConnection = orig_HTTPSConnection  # type: ignore[misc]
++    urllib3_connection.HTTPSConnection = orig_HTTPSConnection  # type: ignore[misc]
+ 
+-    urllib3.util.ssl_.ALPN_PROTOCOLS = ["http/1.1"]
++    urllib3_util_ssl_.ALPN_PROTOCOLS = ["http/1.1"]
+
+--- ./python/cog/_vendor/urllib3/http2.py	2024-04-19 18:45:31
++++ ./python/cog/_vendor/urllib3/http2.py.new	2024-04-19 18:46:29
+@@ -4,9 +4,9 @@
+ import types
+ import typing
+ 
+-import h2.config  # type: ignore[import-untyped]
+-import h2.connection  # type: ignore[import-untyped]
+-import h2.events  # type: ignore[import-untyped]
++import h2.config as h2_config  # type: ignore[import-untyped]
++import h2.connection as h2_connection  # type: ignore[import-untyped]
++import h2.events as h2_events  # type: ignore[import-untyped]
+ 
+ import urllib3.connection as urllib3_connection
+ import urllib3.util.ssl_ as urllib3_util_ssl_
+@@ -61,9 +61,9 @@
+ 
+         super().__init__(host, port, **kwargs)
+ 
+-    def _new_h2_conn(self) -> _LockedObject[h2.connection.H2Connection]:
+-        config = h2.config.H2Configuration(client_side=True)
+-        return _LockedObject(h2.connection.H2Connection(config=config))
++    def _new_h2_conn(self) -> _LockedObject[h2_connection.H2Connection]:
++        config = h2_config.H2Configuration(client_side=True)
++        return _LockedObject(h2_connection.H2Connection(config=config))
+ 
+     def connect(self) -> None:
+         super().connect()
+@@ -130,7 +130,7 @@
+                 if received_data := self.sock.recv(65535):
+                     events = h2_conn.receive_data(received_data)
+                     for event in events:
+-                        if isinstance(event, h2.events.ResponseReceived):
++                        if isinstance(event, h2_events.ResponseReceived):
+                             headers = HTTPHeaderDict()
+                             for header, value in event.headers:
+                                 if header == b":status":
+@@ -140,13 +140,13 @@
+                                         header.decode("ascii"), value.decode("ascii")
+                                     )
+ 
+-                        elif isinstance(event, h2.events.DataReceived):
++                        elif isinstance(event, h2_events.DataReceived):
+                             data += event.data
+                             h2_conn.acknowledge_received_data(
+                                 event.flow_controlled_length, event.stream_id
+                             )
+ 
+-                        elif isinstance(event, h2.events.StreamEnded):
++                        elif isinstance(event, h2_events.StreamEnded):
+                             end_stream = True
+ 
+                 if data_to_send := h2_conn.data_to_send():

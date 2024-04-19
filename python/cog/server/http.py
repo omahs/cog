@@ -25,14 +25,14 @@ from typing import (
 if TYPE_CHECKING:
     from typing import ParamSpec
 
-import attrs
-import structlog
-import uvicorn
-from fastapi import Body, FastAPI, Header, Path, Response
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic.error_wrappers import ErrorWrapper
+from .._vendor import attrs
+from .._vendor import structlog
+from .._vendor import uvicorn
+from .._vendor.fastapi import Body, FastAPI, Header, Path, Response
+from .._vendor.fastapi.encoders import jsonable_encoder
+from .._vendor.fastapi.exceptions import RequestValidationError
+from .._vendor.fastapi.responses import JSONResponse
+from .._vendor.pydantic.error_wrappers import ErrorWrapper
 
 from .. import schema
 from ..logging import setup_logging

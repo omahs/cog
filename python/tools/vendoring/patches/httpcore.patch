@@ -1,0 +1,428 @@
+--- ./python/cog/_vendor/httpcore/_async/http2.py	2024-04-19 18:41:36
++++ ./python/cog/_vendor/httpcore/_async/http2.py.new	2024-04-19 18:43:03
+@@ -4,11 +4,11 @@
+ import types
+ import typing
+ 
+-import h2.config
+-import h2.connection
+-import h2.events
+-import h2.exceptions
+-import h2.settings
++import h2.config as h2_config
++import h2.connection as h2_connection
++import h2.events as h2_events
++import h2.exceptions as h2_exceptions
++import h2.settings as h2_settings
+ 
+ from .._backends.base import AsyncNetworkStream
+ from .._exceptions import (
+@@ -39,7 +39,7 @@
+ 
+ class AsyncHTTP2Connection(AsyncConnectionInterface):
+     READ_NUM_BYTES = 64 * 1024
+-    CONFIG = h2.config.H2Configuration(validate_inbound_headers=False)
++    CONFIG = h2_config.H2Configuration(validate_inbound_headers=False)
+ 
+     def __init__(
+         self,
+@@ -50,7 +50,7 @@
+         self._origin = origin
+         self._network_stream = stream
+         self._keepalive_expiry: typing.Optional[float] = keepalive_expiry
+-        self._h2_state = h2.connection.H2Connection(config=self.CONFIG)
++        self._h2_state = h2_connection.H2Connection(config=self.CONFIG)
+         self._state = HTTPConnectionState.IDLE
+         self._expire_at: typing.Optional[float] = None
+         self._request_count = 0
+@@ -66,16 +66,16 @@
+         self._events: typing.Dict[
+             int,
+             typing.Union[
+-                h2.events.ResponseReceived,
+-                h2.events.DataReceived,
+-                h2.events.StreamEnded,
+-                h2.events.StreamReset,
++                h2_events.ResponseReceived,
++                h2_events.DataReceived,
++                h2_events.StreamEnded,
++                h2_events.StreamReset,
+             ],
+         ] = {}
+ 
+         # Connection terminated events are stored as state since
+         # we need to handle them for all streams.
+-        self._connection_terminated: typing.Optional[h2.events.ConnectionTerminated] = (
++        self._connection_terminated: typing.Optional[h2_events.ConnectionTerminated] = (
+             None
+         )
+ 
+@@ -131,7 +131,7 @@
+         try:
+             stream_id = self._h2_state.get_next_available_stream_id()
+             self._events[stream_id] = []
+-        except h2.exceptions.NoAvailableStreamIDError:  # pragma: nocover
++        except h2_exceptions.NoAvailableStreamIDError:  # pragma: nocover
+             self._used_all_stream_ids = True
+             self._request_count -= 1
+             raise ConnectionNotAvailable()
+@@ -166,7 +166,7 @@
+                 async with Trace("response_closed", logger, request, kwargs):
+                     await self._response_closed(stream_id=stream_id)
+ 
+-            if isinstance(exc, h2.exceptions.ProtocolError):
++            if isinstance(exc, h2_exceptions.ProtocolError):
+                 # One case where h2 can raise a protocol error is when a
+                 # closed frame has been seen by the state machine.
+                 #
+@@ -192,15 +192,15 @@
+         # Need to set these manually here instead of manipulating via
+         # __setitem__() otherwise the H2Connection will emit SettingsUpdate
+         # frames in addition to sending the undesired defaults.
+-        self._h2_state.local_settings = h2.settings.Settings(
++        self._h2_state.local_settings = h2_settings.Settings(
+             client=True,
+             initial_values={
+                 # Disable PUSH_PROMISE frames from the server since we don't do anything
+                 # with them for now.  Maybe when we support caching?
+-                h2.settings.SettingCodes.ENABLE_PUSH: 0,
++                h2_settings.SettingCodes.ENABLE_PUSH: 0,
+                 # These two are taken from h2 for safe defaults
+-                h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS: 100,
+-                h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE: 65536,
++                h2_settings.SettingCodes.MAX_CONCURRENT_STREAMS: 100,
++                h2_settings.SettingCodes.MAX_HEADER_LIST_SIZE: 65536,
+             },
+         )
+ 
+@@ -208,7 +208,7 @@
+         # present in the initial handshake since it's not defined in the original
+         # RFC despite the RFC mandating ignoring settings you don't know about.
+         del self._h2_state.local_settings[
+-            h2.settings.SettingCodes.ENABLE_CONNECT_PROTOCOL
++            h2_settings.SettingCodes.ENABLE_CONNECT_PROTOCOL
+         ]
+ 
+         self._h2_state.initiate_connection()
+@@ -290,7 +290,7 @@
+         """
+         while True:
+             event = await self._receive_stream_event(request, stream_id)
+-            if isinstance(event, h2.events.ResponseReceived):
++            if isinstance(event, h2_events.ResponseReceived):
+                 break
+ 
+         status_code = 200
+@@ -311,18 +311,18 @@
+         """
+         while True:
+             event = await self._receive_stream_event(request, stream_id)
+-            if isinstance(event, h2.events.DataReceived):
++            if isinstance(event, h2_events.DataReceived):
+                 amount = event.flow_controlled_length
+                 self._h2_state.acknowledge_received_data(amount, stream_id)
+                 await self._write_outgoing_data(request)
+                 yield event.data
+-            elif isinstance(event, h2.events.StreamEnded):
++            elif isinstance(event, h2_events.StreamEnded):
+                 break
+ 
+     async def _receive_stream_event(
+         self, request: Request, stream_id: int
+     ) -> typing.Union[
+-        h2.events.ResponseReceived, h2.events.DataReceived, h2.events.StreamEnded
++        h2_events.ResponseReceived, h2_events.DataReceived, h2_events.StreamEnded
+     ]:
+         """
+         Return the next available event for a given stream ID.
+@@ -332,7 +332,7 @@
+         while not self._events.get(stream_id):
+             await self._receive_events(request, stream_id)
+         event = self._events[stream_id].pop(0)
+-        if isinstance(event, h2.events.StreamReset):
++        if isinstance(event, h2_events.StreamReset):
+             raise RemoteProtocolError(event)
+         return event
+ 
+@@ -360,7 +360,7 @@
+             if stream_id is None or not self._events.get(stream_id):
+                 events = await self._read_incoming_data(request)
+                 for event in events:
+-                    if isinstance(event, h2.events.RemoteSettingsChanged):
++                    if isinstance(event, h2_events.RemoteSettingsChanged):
+                         async with Trace(
+                             "receive_remote_settings", logger, request
+                         ) as trace:
+@@ -370,23 +370,23 @@
+                     elif isinstance(
+                         event,
+                         (
+-                            h2.events.ResponseReceived,
+-                            h2.events.DataReceived,
+-                            h2.events.StreamEnded,
+-                            h2.events.StreamReset,
++                            h2_events.ResponseReceived,
++                            h2_events.DataReceived,
++                            h2_events.StreamEnded,
++                            h2_events.StreamReset,
+                         ),
+                     ):
+                         if event.stream_id in self._events:
+                             self._events[event.stream_id].append(event)
+ 
+-                    elif isinstance(event, h2.events.ConnectionTerminated):
++                    elif isinstance(event, h2_events.ConnectionTerminated):
+                         self._connection_terminated = event
+ 
+         await self._write_outgoing_data(request)
+ 
+-    async def _receive_remote_settings_change(self, event: h2.events.Event) -> None:
++    async def _receive_remote_settings_change(self, event: h2_events.Event) -> None:
+         max_concurrent_streams = event.changed_settings.get(
+-            h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS
++            h2_settings.SettingCodes.MAX_CONCURRENT_STREAMS
+         )
+         if max_concurrent_streams:
+             new_max_streams = min(
+@@ -427,7 +427,7 @@
+ 
+     async def _read_incoming_data(
+         self, request: Request
+-    ) -> typing.List[h2.events.Event]:
++    ) -> typing.List[h2_events.Event]:
+         timeouts = request.extensions.get("timeout", {})
+         timeout = timeouts.get("read", None)
+ 
+@@ -451,7 +451,7 @@
+             self._connection_error = True
+             raise exc
+ 
+-        events: typing.List[h2.events.Event] = self._h2_state.receive_data(data)
++        events: typing.List[h2_events.Event] = self._h2_state.receive_data(data)
+ 
+         return events
+ 
+@@ -512,7 +512,7 @@
+             and not self._used_all_stream_ids
+             and not (
+                 self._h2_state.state_machine.state
+-                == h2.connection.ConnectionState.CLOSED
++                == h2_connection.ConnectionState.CLOSED
+             )
+         )
+ 
+--- ./python/cog/_vendor/httpcore/_sync/http2.py	2024-04-19 18:45:22
++++ ./python/cog/_vendor/httpcore/_sync/http2.py.new	2024-04-19 18:45:02
+@@ -4,11 +4,11 @@
+ import types
+ import typing
+ 
+-import h2.config
+-import h2.connection
+-import h2.events
+-import h2.exceptions
+-import h2.settings
++import h2.config as h2_config
++import h2.connection as h2_connection
++import h2.events as h2_events
++import h2.exceptions as h2_exceptions
++import h2.settings as h2_settings
+ 
+ from .._backends.base import NetworkStream
+ from .._exceptions import (
+@@ -39,7 +39,7 @@
+ 
+ class HTTP2Connection(ConnectionInterface):
+     READ_NUM_BYTES = 64 * 1024
+-    CONFIG = h2.config.H2Configuration(validate_inbound_headers=False)
++    CONFIG = h2_config.H2Configuration(validate_inbound_headers=False)
+ 
+     def __init__(
+         self,
+@@ -50,7 +50,7 @@
+         self._origin = origin
+         self._network_stream = stream
+         self._keepalive_expiry: typing.Optional[float] = keepalive_expiry
+-        self._h2_state = h2.connection.H2Connection(config=self.CONFIG)
++        self._h2_state = h2_connection.H2Connection(config=self.CONFIG)
+         self._state = HTTPConnectionState.IDLE
+         self._expire_at: typing.Optional[float] = None
+         self._request_count = 0
+@@ -66,16 +66,16 @@
+         self._events: typing.Dict[
+             int,
+             typing.Union[
+-                h2.events.ResponseReceived,
+-                h2.events.DataReceived,
+-                h2.events.StreamEnded,
+-                h2.events.StreamReset,
++                h2_events.ResponseReceived,
++                h2_events.DataReceived,
++                h2_events.StreamEnded,
++                h2_events.StreamReset,
+             ],
+         ] = {}
+ 
+         # Connection terminated events are stored as state since
+         # we need to handle them for all streams.
+-        self._connection_terminated: typing.Optional[h2.events.ConnectionTerminated] = (
++        self._connection_terminated: typing.Optional[h2_events.ConnectionTerminated] = (
+             None
+         )
+ 
+@@ -131,8 +131,8 @@
+         try:
+             stream_id = self._h2_state.get_next_available_stream_id()
+             self._events[stream_id] = []
+-        except h2.exceptions.NoAvailableStreamIDError:  # pragma: nocover
+-            self._used_all_stream_ids = True
++        except h2_exceptions.NoAvailableStreamIDError:  # pragma: nocover
++            self._used_all_stream_ids =_True
+             self._request_count -= 1
+             raise ConnectionNotAvailable()
+ 
+@@ -166,7 +166,7 @@
+                 with Trace("response_closed", logger, request, kwargs):
+                     self._response_closed(stream_id=stream_id)
+ 
+-            if isinstance(exc, h2.exceptions.ProtocolError):
++            if isinstance(exc, h2_exceptions.ProtocolError):
+                 # One case where h2 can raise a protocol error is when a
+                 # closed frame has been seen by the state machine.
+                 #
+@@ -192,15 +192,15 @@
+         # Need to set these manually here instead of manipulating via
+         # __setitem__() otherwise the H2Connection will emit SettingsUpdate
+         # frames in addition to sending the undesired defaults.
+-        self._h2_state.local_settings = h2.settings.Settings(
++        self._h2_state.local_settings = h2_settings.Settings(
+             client=True,
+             initial_values={
+                 # Disable PUSH_PROMISE frames from the server since we don't do anything
+                 # with them for now.  Maybe when we support caching?
+-                h2.settings.SettingCodes.ENABLE_PUSH: 0,
++                h2_settings.SettingCodes.ENABLE_PUSH: 0,
+                 # These two are taken from h2 for safe defaults
+-                h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS: 100,
+-                h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE: 65536,
++                h2_settings.SettingCodes.MAX_CONCURRENT_STREAMS: 100,
++                h2_settings.SettingCodes.MAX_HEADER_LIST_SIZE: 65536,
+             },
+         )
+ 
+@@ -208,7 +208,7 @@
+         # present in the initial handshake since it's not defined in the original
+         # RFC despite the RFC mandating ignoring settings you don't know about.
+         del self._h2_state.local_settings[
+-            h2.settings.SettingCodes.ENABLE_CONNECT_PROTOCOL
++            h2_settings.SettingCodes.ENABLE_CONNECT_PROTOCOL
+         ]
+ 
+         self._h2_state.initiate_connection()
+@@ -290,7 +290,7 @@
+         """
+         while True:
+             event = self._receive_stream_event(request, stream_id)
+-            if isinstance(event, h2.events.ResponseReceived):
++            if isinstance(event, h2_events.ResponseReceived):
+                 break
+ 
+         status_code = 200
+@@ -311,18 +311,18 @@
+         """
+         while True:
+             event = self._receive_stream_event(request, stream_id)
+-            if isinstance(event, h2.events.DataReceived):
++            if isinstance(event, h2_events.DataReceived):
+                 amount = event.flow_controlled_length
+                 self._h2_state.acknowledge_received_data(amount, stream_id)
+                 self._write_outgoing_data(request)
+                 yield event.data
+-            elif isinstance(event, h2.events.StreamEnded):
++            elif isinstance(event, h2_events.StreamEnded):
+                 break
+ 
+     def _receive_stream_event(
+         self, request: Request, stream_id: int
+     ) -> typing.Union[
+-        h2.events.ResponseReceived, h2.events.DataReceived, h2.events.StreamEnded
++        h2_events.ResponseReceived, h2_events.DataReceived, h2_events.StreamEnded
+     ]:
+         """
+         Return the next available event for a given stream ID.
+@@ -332,7 +332,7 @@
+         while not self._events.get(stream_id):
+             self._receive_events(request, stream_id)
+         event = self._events[stream_id].pop(0)
+-        if isinstance(event, h2.events.StreamReset):
++        if isinstance(event, h2_events.StreamReset):
+             raise RemoteProtocolError(event)
+         return event
+ 
+@@ -360,7 +360,7 @@
+             if stream_id is None or not self._events.get(stream_id):
+                 events = self._read_incoming_data(request)
+                 for event in events:
+-                    if isinstance(event, h2.events.RemoteSettingsChanged):
++                    if isinstance(event, h2_events.RemoteSettingsChanged):
+                         with Trace(
+                             "receive_remote_settings", logger, request
+                         ) as trace:
+@@ -370,23 +370,23 @@
+                     elif isinstance(
+                         event,
+                         (
+-                            h2.events.ResponseReceived,
+-                            h2.events.DataReceived,
+-                            h2.events.StreamEnded,
+-                            h2.events.StreamReset,
++                            h2_events.ResponseReceived,
++                            h2_events.DataReceived,
++                            h2_events.StreamEnded,
++                            h2_events.StreamReset,
+                         ),
+                     ):
+                         if event.stream_id in self._events:
+                             self._events[event.stream_id].append(event)
+ 
+-                    elif isinstance(event, h2.events.ConnectionTerminated):
++                    elif isinstance(event, h2_events.ConnectionTerminated):
+                         self._connection_terminated = event
+ 
+         self._write_outgoing_data(request)
+ 
+-    def _receive_remote_settings_change(self, event: h2.events.Event) -> None:
++    def _receive_remote_settings_change(self, event: h2_events.Event) -> None:
+         max_concurrent_streams = event.changed_settings.get(
+-            h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS
++            h2_settings.SettingCodes.MAX_CONCURRENT_STREAMS
+         )
+         if max_concurrent_streams:
+             new_max_streams = min(
+@@ -427,7 +427,7 @@
+ 
+     def _read_incoming_data(
+         self, request: Request
+-    ) -> typing.List[h2.events.Event]:
++    ) -> typing.List[h2_events.Event]:
+         timeouts = request.extensions.get("timeout", {})
+         timeout = timeouts.get("read", None)
+ 
+@@ -451,7 +451,7 @@
+             self._connection_error = True
+             raise exc
+ 
+-        events: typing.List[h2.events.Event] = self._h2_state.receive_data(data)
++        events: typing.List[h2_events.Event] = self._h2_state.receive_data(data)
+ 
+         return events
+ 
+@@ -512,7 +512,7 @@
+             and not self._used_all_stream_ids
+             and not (
+                 self._h2_state.state_machine.state
+-                == h2.connection.ConnectionState.CLOSED
++                == h2_connection.ConnectionState.CLOSED
+             )
+         )
+ 

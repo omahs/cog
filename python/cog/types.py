@@ -9,9 +9,9 @@ import urllib.request
 import urllib.response
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, TypeVar, Union
 
-import httpx
-import requests
-from pydantic import Field
+from ._vendor import httpx
+from ._vendor import requests
+from ._vendor.pydantic import Field
 
 FILENAME_ILLEGAL_CHARS = set("\u0000/")
 

@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 from enum import Enum, auto, unique
 from typing import Any, AsyncIterator, Awaitable, Iterator, Optional, Union
 
-import httpx
-import structlog
-from attrs import define
+from .._vendor import httpx
+from .._vendor import structlog
+from .._vendor.attrs import define
 
 from .. import schema, types
 from .clients import SKIP_START_EVENT, ClientManager

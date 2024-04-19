@@ -1,5 +1,5 @@
 import pytest
-import requests
+from cog._vendor import requests
 import responses
 from cog.schema import WebhookEvent
 from responses import registries

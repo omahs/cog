@@ -25,12 +25,12 @@ try:
 except ImportError:  # Python < 3.8
     from typing_compat import get_args, get_origin  # type: ignore
 
-import yaml
-from pydantic import BaseModel, Field, create_model
-from pydantic.fields import FieldInfo
+from ._vendor import yaml
+from ._vendor.pydantic import BaseModel, Field, create_model
+from ._vendor.pydantic.fields import FieldInfo
 
 # Added in Python 3.9. Can be from typing if we drop support for <3.9
-from typing_extensions import Annotated
+from ._vendor.typing_extensions import Annotated
 
 from .errors import ConfigDoesNotExist, PredictorNotSet
 from .types import (

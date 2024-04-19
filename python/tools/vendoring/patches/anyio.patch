@@ -1,0 +1,11 @@
+--- ./python/cog/_vendor/anyio/_core/_eventloop.py	2024-04-19 17:55:20
++++ ./python/cog/_vendor/anyio/_core/_eventloop.py.new	2024-04-19 17:56:01
+@@ -154,7 +154,7 @@
+     if asynclib_name is None:
+         asynclib_name = sniffio.current_async_library()
+ 
+-    modulename = "anyio._backends._" + asynclib_name
++    modulename = "cog._vendor.anyio._backends._" + asynclib_name
+     try:
+         module = sys.modules[modulename]
+     except KeyError:

@@ -5,9 +5,9 @@ import os
 from typing import Any, AsyncIterator, Awaitable, Callable, Collection, Dict, Optional
 from urllib.parse import urlparse
 
-import httpx
-import structlog
-from fastapi.encoders import jsonable_encoder
+from .._vendor import httpx
+from .._vendor import structlog
+from .._vendor.fastapi.encoders import jsonable_encoder
 
 from .. import types
 from ..schema import PredictionResponse, Status, WebhookEvent
