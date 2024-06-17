@@ -144,8 +144,13 @@ async def test_prediction_runner_called_while_busy_idempotent_wrong_id(runner):
     assert response.status == "succeeded"
 
 
-@pytest.mark.asyncio
-async def test_prediction_runner_cancel(runner):
+@pytest.mark.parametrize("name", ["sleep", "async_sleep"])
+async def test_prediction_runner_cancel(name):
+    runner = PredictionRunner(
+        predictor_ref=_fixture_path(name), shutdown_event=None, concurrency=10
+    )
+    await runner.setup()
+
     request = PredictionRequest(input={"sleep": 0.5})
     _, async_result = runner.predict(request)
     await asyncio.sleep(0.001)
