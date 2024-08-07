@@ -37,16 +37,18 @@ from ..predictor import (
     load_slim_predictor_from_ref,
 )
 from ..types import CogConfig
-from .runner import (
-    PredictionRunner,
-    RunnerBusyError,
+from .prediction_service import (
+    BusyError,
+    PredictionService,
     SetupResult,
-    SetupTask,
     UnknownPredictionError,
 )
+from .probes import ProbeHelper
 from .telemetry import make_trace_context, trace_context
+from .worker import Worker
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
     from typing import ParamSpec, TypeVar  # pylint: disable=import-outside-toplevel
 
     P = ParamSpec("P")  # pylint: disable=invalid-name
@@ -66,7 +68,7 @@ class Health(Enum):
 
 class MyState:
     health: Health
-    setup_task: Optional[SetupTask]
+    setup_future: Optional["Future[None]"]
     setup_result: Optional[SetupResult]
 
 
@@ -118,7 +120,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
     )
 
     app.state.health = Health.STARTING
-    app.state.setup_task = None
+    app.state.setup_future = None
     app.state.setup_result = None
     started_at = datetime.now(tz=timezone.utc)
 
@@ -140,11 +142,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         add_setup_failed_routes(app, started_at, msg)
         return app
 
-    runner = PredictionRunner(
-        predictor_ref=predictor_ref,
-        shutdown_event=shutdown_event,
-        upload_url=upload_url,
-    )
+    worker = Worker(predictor_ref=predictor_ref)
+    prediction_service = PredictionService(worker=worker)
 
     class PredictionRequest(schema.PredictionRequest.with_types(input_type=InputType)):
         pass
@@ -243,11 +242,16 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
                 if shutdown_event is not None:
                     shutdown_event.set()
         else:
-            app.state.setup_task = runner.setup()
+            app.state.setup_future = prediction_service.setup()
+
+            # In kubernetes, (maybe) mark the pod as ready when setup completes.
+            #
+            # TODO: find a less awkward place for this to live.
+            app.state.setup_future.add_done_callback(lambda _: _mark_ready())
 
     @app.on_event("shutdown")
     def shutdown() -> None:
-        runner.shutdown()
+        worker.terminate()
 
     @app.get("/")
     async def root() -> Any:
@@ -261,7 +265,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
     async def healthcheck() -> Any:
         _check_setup_result()
         if app.state.health == Health.READY:
-            health = Health.BUSY if runner.is_busy() else Health.READY
+            health = Health.BUSY if prediction_service.is_busy() else Health.READY
         else:
             health = app.state.health
         setup = app.state.setup_result.to_dict() if app.state.setup_result else {}
@@ -282,7 +286,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         """
         Run a single prediction on the model
         """
-        if runner.is_busy():
+        if prediction_service.is_busy():
             return JSONResponse(
                 {"detail": "Already running a prediction"}, status_code=409
             )
@@ -328,6 +332,16 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         # set on the prediction object
         request.id = prediction_id
 
+        # If the prediction service is already running a prediction with a
+        # matching ID, return its current state.
+        if prediction_service.is_busy():
+            response = prediction_service.prediction_response
+            if response.id == request.id:
+                return JSONResponse(
+                    jsonable_encoder(response),
+                    status_code=202,
+                )
+
         # TODO: spec-compliant parsing of Prefer header.
         respond_async = prefer == "respond-async"
 
@@ -352,24 +366,39 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         if request.input is None:
             request.input = {}  # pylint: disable=attribute-defined-outside-init
 
-        try:
-            # For now, we only ask PredictionRunner to handle file uploads for
+        event_handler_kwargs = {}
+        if respond_async:
+            # For now, we only ask PredictionService to handle file uploads for
             # async predictions. This is unfortunate but required to ensure
             # backwards-compatible behaviour for synchronous predictions.
-            initial_response, async_result = runner.predict(
-                request,
-                upload=respond_async,
+            event_handler_kwargs["upload_url"] = upload_url
+
+        try:
+            prediction_fut = prediction_service.predict(
+                request, event_handler_kwargs=event_handler_kwargs
             )
-        except RunnerBusyError:
+        except BusyError:
             return JSONResponse(
                 {"detail": "Already running a prediction"}, status_code=409
             )
 
-        if respond_async:
-            return JSONResponse(jsonable_encoder(initial_response), status_code=202)
+        if hasattr(request.input, "cleanup"):
+            prediction_fut.add_done_callback(lambda _: request.input.cleanup())
 
+        if respond_async:
+            return JSONResponse(
+                jsonable_encoder(prediction_service.prediction_response),
+                status_code=202,
+            )
+
+        # Otherwise, wait for the prediction to complete...
+        prediction_fut.result()
+
+        # ...and return the result.
         try:
-            response = PredictionResponse(**async_result.get().dict())
+            response = PredictionResponse(
+                **prediction_service.prediction_response.dict()
+            )
         except ValidationError as e:
             _log_invalid_output(e)
             raise HTTPException(status_code=500, detail=str(e)) from e
@@ -389,22 +418,27 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         """
         Cancel a running prediction
         """
-        if not runner.is_busy():
+        if not prediction_service.is_busy():
             return JSONResponse({}, status_code=404)
         try:
-            runner.cancel(prediction_id)
+            prediction_service.cancel(prediction_id)
         except UnknownPredictionError:
             return JSONResponse({}, status_code=404)
         return JSONResponse({}, status_code=200)
 
+    def _mark_ready() -> None:
+        if prediction_service.setup_result.status == schema.Status.SUCCEEDED:
+            probes = ProbeHelper()
+            probes.ready()
+
     def _check_setup_result() -> Any:
-        if app.state.setup_task is None:
+        if app.state.setup_future is None:
             return
 
-        if not app.state.setup_task.ready():
+        if not app.state.setup_future.done():
             return
 
-        result = app.state.setup_task.get()
+        result = prediction_service.setup_result
 
         if result.status == schema.Status.SUCCEEDED:
             app.state.health = Health.READY
@@ -413,8 +447,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
 
         app.state.setup_result = result
 
-        # Reset app.state.setup_task so future calls are a no-op
-        app.state.setup_task = None
+        # Reset app.state.setup_future so future calls are a no-op
+        app.state.setup_future = None
 
     return app
 

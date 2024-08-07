@@ -5,15 +5,16 @@ from unittest import mock
 
 import pytest
 
-from cog.schema import PredictionRequest, PredictionResponse, Status
+from cog.schema import PredictionRequest, PredictionResponse, Status, WebhookEvent
 from cog.server.eventtypes import Done, Log
 from cog.server.prediction_service import (
     BusyError,
     PredictionService,
+    PredictionEventHandler,
     SetupEventHandler,
+    SetupResult,
     UnknownPredictionError,
 )
-from cog.server.runner import SetupResult
 from cog.server.worker import Worker
 
 
@@ -500,3 +501,187 @@ def test_setup_event_handler(log, result):
             h.handle_event(event)
 
     assert h.result == result
+
+
+def test_prediction_event_handler():
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p)
+
+    assert p.status == Status.PROCESSING
+    assert p.output is None
+    assert p.logs == ""
+    assert isinstance(p.started_at, datetime)
+
+    h.set_output_type(multi=False)
+    h.append_output("giraffes")
+    assert p.output == "giraffes"
+
+
+def test_prediction_event_handler_multi():
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p)
+
+    assert p.status == Status.PROCESSING
+    assert p.output is None
+    assert p.logs == ""
+    assert isinstance(p.started_at, datetime)
+
+    h.set_output_type(multi=True)
+    h.append_output("elephant")
+    h.append_output("duck")
+    assert p.output == ["elephant", "duck"]
+
+    h.append_logs("running a prediction\n")
+    h.append_logs("still running\n")
+    assert p.logs == "running a prediction\nstill running\n"
+
+    h.succeeded()
+    assert p.status == Status.SUCCEEDED
+    assert isinstance(p.completed_at, datetime)
+
+    h.failed("oops")
+    assert p.status == Status.FAILED
+    assert p.error == "oops"
+    assert isinstance(p.completed_at, datetime)
+
+    h.canceled()
+    assert p.status == Status.CANCELED
+    assert isinstance(p.completed_at, datetime)
+
+
+def test_prediction_event_handler_webhook_sender():
+    s = mock.Mock()
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p, webhook_sender=s)
+
+    h.set_output_type(multi=True)
+    h.append_output("elephant")
+    h.append_output("duck")
+
+    h.append_logs("running a prediction\n")
+    h.append_logs("still running\n")
+
+    s.reset_mock()
+    h.succeeded()
+
+    s.assert_called_once_with(
+        mock.ANY,
+        WebhookEvent.COMPLETED,
+    )
+    actual = s.call_args[0][0]
+    assert actual.input == {"hello": "there"}
+    assert actual.output == ["elephant", "duck"]
+    assert actual.logs == "running a prediction\nstill running\n"
+    assert actual.status == "succeeded"
+    assert "predict_time" in actual.metrics
+
+
+def test_prediction_event_handler_webhook_sender_intermediate():
+    s = mock.Mock()
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p, webhook_sender=s)
+
+    s.assert_called_once_with(mock.ANY, WebhookEvent.START)
+    actual = s.call_args[0][0]
+    assert actual.status == "processing"
+
+    s.reset_mock()
+    h.set_output_type(multi=False)
+    h.append_output("giraffes")
+    assert s.call_count == 0
+
+
+def test_prediction_event_handler_webhook_sender_intermediate_multi():
+    s = mock.Mock()
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p, webhook_sender=s)
+
+    s.assert_called_once_with(mock.ANY, WebhookEvent.START)
+    actual = s.call_args[0][0]
+    assert actual.status == "processing"
+
+    s.reset_mock()
+    h.set_output_type(multi=True)
+    h.append_output("elephant")
+    print(s.call_args_list)
+    assert s.call_count == 1
+    actual = s.call_args_list[0][0][0]
+    assert actual.output == ["elephant"]
+    assert s.call_args_list[0][0][1] == WebhookEvent.OUTPUT
+
+    s.reset_mock()
+    h.append_output("duck")
+    assert s.call_count == 1
+    actual = s.call_args_list[0][0][0]
+    assert actual.output == ["elephant", "duck"]
+    assert s.call_args_list[0][0][1] == WebhookEvent.OUTPUT
+
+    s.reset_mock()
+    h.append_logs("running a prediction\n")
+    assert s.call_count == 1
+    actual = s.call_args_list[0][0][0]
+    assert actual.logs == "running a prediction\n"
+    assert s.call_args_list[0][0][1] == WebhookEvent.LOGS
+
+    s.reset_mock()
+    h.append_logs("still running\n")
+    assert s.call_count == 1
+    actual = s.call_args_list[0][0][0]
+    assert actual.logs == "running a prediction\nstill running\n"
+    assert s.call_args_list[0][0][1] == WebhookEvent.LOGS
+
+    s.reset_mock()
+    h.succeeded()
+    s.assert_called_once()
+    actual = s.call_args[0][0]
+    assert actual.status == "succeeded"
+    assert s.call_args[0][1] == WebhookEvent.COMPLETED
+
+    s.reset_mock()
+    h.failed("oops")
+    s.assert_called_once()
+    actual = s.call_args[0][0]
+    assert actual.status == "failed"
+    assert actual.error == "oops"
+    assert s.call_args[0][1] == WebhookEvent.COMPLETED
+
+    s.reset_mock()
+    h.canceled()
+    s.assert_called_once()
+    actual = s.call_args[0][0]
+    assert actual.status == "canceled"
+    assert s.call_args[0][1] == WebhookEvent.COMPLETED
+
+
+def test_prediction_event_handler_file_uploads():
+    u = mock.Mock()
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p, file_uploader=u)
+
+    # in reality this would be a Path object, but in this test we just care it
+    # passes the output into the upload files function and uses whatever comes
+    # back as final output.
+    u.return_value = "http://example.com/output-image.png"
+    h.set_output_type(multi=False)
+    h.append_output("Path(to/my/file)")
+
+    u.assert_called_once_with("Path(to/my/file)")
+    assert p.output == "http://example.com/output-image.png"
+
+
+def test_prediction_event_handler_file_uploads_multi():
+    u = mock.Mock()
+    p = PredictionResponse(input={"hello": "there"})
+    h = PredictionEventHandler(p, file_uploader=u)
+
+    u.return_value = []
+    h.set_output_type(multi=True)
+
+    u.return_value = "http://example.com/hello.jpg"
+    h.append_output("hello.jpg")
+
+    u.return_value = "http://example.com/world.jpg"
+    h.append_output("world.jpg")
+
+    u.assert_has_calls([mock.call("hello.jpg"), mock.call("world.jpg")])
+    assert p.output == ["http://example.com/hello.jpg", "http://example.com/world.jpg"]
