@@ -48,7 +48,6 @@ from .telemetry import make_trace_context, trace_context
 from .worker import Worker
 
 if TYPE_CHECKING:
-    from concurrent.futures import Future
     from typing import ParamSpec, TypeVar  # pylint: disable=import-outside-toplevel
 
     P = ParamSpec("P")  # pylint: disable=invalid-name
@@ -68,7 +67,6 @@ class Health(Enum):
 
 class MyState:
     health: Health
-    setup_future: Optional["Future[None]"]
     setup_result: Optional[SetupResult]
 
 
@@ -120,7 +118,6 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
     )
 
     app.state.health = Health.STARTING
-    app.state.setup_future = None
     app.state.setup_result = None
     started_at = datetime.now(tz=timezone.utc)
 
@@ -128,7 +125,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
     @app.post("/shutdown")
     async def start_shutdown() -> Any:
         log.info("shutdown requested via http")
-        if shutdown_event is not None:
+        if shutdown_event:
             shutdown_event.set()
         return JSONResponse({}, status_code=200)
 
@@ -238,16 +235,11 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             and app.state.setup_result.status == schema.Status.FAILED
         ):
             # signal shutdown if interactive run
-            if not await_explicit_shutdown:
-                if shutdown_event is not None:
-                    shutdown_event.set()
+            if shutdown_event and not await_explicit_shutdown:
+                shutdown_event.set()
         else:
-            app.state.setup_future = prediction_service.setup()
-
-            # In kubernetes, (maybe) mark the pod as ready when setup completes.
-            #
-            # TODO: find a less awkward place for this to live.
-            app.state.setup_future.add_done_callback(lambda _: _mark_ready())
+            setup_fut = prediction_service.setup()
+            setup_fut.add_done_callback(lambda _: _handle_setup_done())
 
     @app.on_event("shutdown")
     def shutdown() -> None:
@@ -263,7 +255,6 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
 
     @app.get("/health-check")
     async def healthcheck() -> Any:
-        _check_setup_result()
         if app.state.health == Health.READY:
             health = Health.BUSY if prediction_service.is_busy() else Health.READY
         else:
@@ -426,29 +417,23 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             return JSONResponse({}, status_code=404)
         return JSONResponse({}, status_code=200)
 
-    def _mark_ready() -> None:
-        if prediction_service.setup_result.status == schema.Status.SUCCEEDED:
+    def _handle_setup_done() -> None:
+        app.state.setup_result = prediction_service.setup_result
+
+        if app.state.setup_result.status == schema.Status.SUCCEEDED:
+            app.state.health = Health.READY
+
+            # In kubernetes, mark the pod as ready now setup has completed.
             probes = ProbeHelper()
             probes.ready()
-
-    def _check_setup_result() -> Any:
-        if app.state.setup_future is None:
-            return
-
-        if not app.state.setup_future.done():
-            return
-
-        result = prediction_service.setup_result
-
-        if result.status == schema.Status.SUCCEEDED:
-            app.state.health = Health.READY
         else:
+            assert app.state.setup_result.status == schema.Status.FAILED
+
             app.state.health = Health.SETUP_FAILED
 
-        app.state.setup_result = result
-
-        # Reset app.state.setup_future so future calls are a no-op
-        app.state.setup_future = None
+            # Setup failed, so we should shutdown now.
+            if shutdown_event and not await_explicit_shutdown:
+                shutdown_event.set()
 
     return app
 
@@ -614,6 +599,9 @@ if __name__ == "__main__":
     s.stop()
 
     # return error exit code when setup failed and cog is running in interactive mode (not k8s)
-    if app.state.setup_result and not await_explicit_shutdown:
-        if app.state.setup_result.status == schema.Status.FAILED:
-            sys.exit(-1)
+    if (
+        app.state.setup_result
+        and app.state.setup_result.status == schema.Status.FAILED
+        and not await_explicit_shutdown
+    ):
+        sys.exit(-1)
