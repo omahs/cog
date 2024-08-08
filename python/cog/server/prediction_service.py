@@ -136,7 +136,7 @@ class PredictionService:
         )
         self._prediction_id = prediction.id
 
-        f = Future()
+        fut = Future()
 
         try:
             payload = _prepare_predict_payload(prediction.input)
@@ -146,9 +146,17 @@ class PredictionService:
         else:
             self._predict_future = self._worker.predict(payload)
 
-        self._predict_future.add_done_callback(lambda _: f.set_result(None))
+        def _handle_done(f: "Future[Done]") -> None:
+            # Propagate predict exceptions to our caller.
+            exc = f.exception()
+            if exc:
+                fut.set_exception(exc)
+            else:
+                fut.set_result(None)
 
-        return f
+        self._predict_future.add_done_callback(_handle_done)
+
+        return fut
 
     @property
     def prediction_response(self) -> schema.PredictionResponse:

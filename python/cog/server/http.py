@@ -48,6 +48,7 @@ from .telemetry import make_trace_context, trace_context
 from .worker import Worker
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future  # pylint: disable=import-outside-toplevel
     from typing import ParamSpec, TypeVar  # pylint: disable=import-outside-toplevel
 
     P = ParamSpec("P")  # pylint: disable=invalid-name
@@ -63,6 +64,7 @@ class Health(Enum):
     READY = auto()
     BUSY = auto()
     SETUP_FAILED = auto()
+    DEFUNCT = auto()
 
 
 class MyState:
@@ -239,7 +241,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
                 shutdown_event.set()
         else:
             setup_fut = prediction_service.setup()
-            setup_fut.add_done_callback(lambda _: _handle_setup_done())
+            setup_fut.add_done_callback(_handle_setup_done)
 
     @app.on_event("shutdown")
     def shutdown() -> None:
@@ -377,13 +379,15 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             prediction_fut.add_done_callback(lambda _: request.input.cleanup())
 
         if respond_async:
+            prediction_fut.add_done_callback(_handle_prediction_done)
+
             return JSONResponse(
                 jsonable_encoder(prediction_service.prediction_response),
                 status_code=202,
             )
 
         # Otherwise, wait for the prediction to complete...
-        prediction_fut.result()
+        _handle_prediction_done(prediction_fut)
 
         # ...and return the result.
         try:
@@ -417,7 +421,13 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             return JSONResponse({}, status_code=404)
         return JSONResponse({}, status_code=200)
 
-    def _handle_setup_done() -> None:
+    def _handle_prediction_done(fut: "Future[None]") -> None:
+        try:
+            fut.result()
+        except Exception as e:
+            _maybe_shutdown(e)
+
+    def _handle_setup_done(fut: "Future[None]") -> None:
         app.state.setup_result = prediction_service.setup_result
 
         if app.state.setup_result.status == schema.Status.SUCCEEDED:
@@ -427,13 +437,16 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             probes = ProbeHelper()
             probes.ready()
         else:
-            assert app.state.setup_result.status == schema.Status.FAILED
+            _maybe_shutdown(Exception("setup failed"), status=Health.SETUP_FAILED)
 
-            app.state.health = Health.SETUP_FAILED
-
-            # Setup failed, so we should shutdown now.
-            if shutdown_event and not await_explicit_shutdown:
-                shutdown_event.set()
+    def _maybe_shutdown(exc: BaseException, *, status: Health = Health.DEFUNCT) -> None:
+        log.error("encountered fatal error", exc_info=exc)
+        app.state.health = status
+        if shutdown_event and not await_explicit_shutdown:
+            log.error("shutting down immediately")
+            shutdown_event.set()
+        else:
+            log.error("awaiting explicit shutdown")
 
     return app
 
