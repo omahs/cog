@@ -522,7 +522,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             _log_invalid_output(e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-        response_object = response.model_dump() if PYDANTIC_V2 else response.dict()
+        response_object = response.dict()
         response_object["output"] = upload_files(
             response_object["output"],
             upload_file=lambda fh: upload_file(fh, request.output_file_prefix),  # type: ignore
