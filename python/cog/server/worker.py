@@ -11,7 +11,6 @@ import multiprocess
 import structlog
 from multiprocess.connection import Connection
 
-from ..json import make_encodeable
 from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup
 from .eventtypes import (
     Done,
@@ -324,10 +323,10 @@ class _ChildWorker(_spawn.Process):  # type: ignore
                 if isinstance(result, types.GeneratorType):
                     self._events.send(PredictionOutputType(multi=True))
                     for r in result:
-                        self._events.send(PredictionOutput(payload=make_encodeable(r)))
+                        self._events.send(PredictionOutput(payload=r))
                 else:
                     self._events.send(PredictionOutputType(multi=False))
-                    self._events.send(PredictionOutput(payload=make_encodeable(result)))
+                    self._events.send(PredictionOutput(payload=result))
         except CancelationException:
             done.canceled = True
         except Exception as e:  # pylint: disable=broad-exception-caught
