@@ -1,4 +1,3 @@
-import multiprocessing
 import os
 import signal
 import sys
@@ -6,10 +5,11 @@ import traceback
 import types
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, auto, unique
-from multiprocessing.connection import Connection
 from typing import Any, Callable, Dict, Optional, TextIO, Union
 
+import multiprocess
 import structlog
+from multiprocess.connection import Connection
 
 from ..json import make_encodeable
 from ..predictor import BasePredictor, get_predict, load_predictor_from_ref, run_setup
@@ -28,7 +28,7 @@ from .exceptions import (
 )
 from .helpers import StreamRedirector, WrappedStream
 
-_spawn = multiprocessing.get_context("spawn")
+_spawn = multiprocess.get_context("spawn")  # pylint: disable=no-member # type:ignore
 
 _PublicEventType = Union[Done, Log, PredictionOutput, PredictionOutputType]
 
