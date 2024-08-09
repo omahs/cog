@@ -10,6 +10,7 @@ import urllib.request
 import urllib.response
 from types import TracebackType
 from typing import (
+    IO,
     Any,
     Dict,
     Iterator,
@@ -84,363 +85,6 @@ def Input(  # pylint: disable=invalid-name, too-many-arguments
     return pydantic.Field(**field_kwargs)
 
 
-class Secret(pydantic.SecretStr):
-    if PYDANTIC_V2:
-        from pydantic.json_schema import JsonSchemaValue
-        from pydantic_core import CoreSchema
-
-        @classmethod
-        def __get_pydantic_json_schema__(
-            cls, core_schema: CoreSchema, handler: Any
-        ) -> JsonSchemaValue:
-            json_schema = handler(core_schema)
-            json_schema.update(
-                {
-                    "type": "string",
-                    "format": "password",
-                    "x-cog-secret": True,
-                }
-            )
-            return json_schema
-    else:
-
-        @classmethod
-        def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
-            """Defines what this type should be in openapi.json"""
-            field_schema.update(
-                {
-                    "type": "string",
-                    "format": "password",
-                    "x-cog-secret": True,
-                }
-            )
-
-
-class IOBaseMeta(type(io.IOBase)):
-    def __instancecheck__(cls, instance: Any) -> bool:
-        return isinstance(instance, (cls, io.IOBase))
-
-
-class File(metaclass=IOBaseMeta):
-    """Deprecated: use Path instead."""
-
-    validate_always = True
-
-    @classmethod
-    def validate(cls, value: Any) -> io.IOBase:
-        print("!!!! validate", value, type(value))
-        if isinstance(value, DataURLFile):
-            return value  # type: ignore
-        if isinstance(value, URLFile):
-            return value  # type: ignore
-
-        parsed_url = urllib.parse.urlparse(value)
-        if parsed_url.scheme == "data":
-            return DataURLFile(value)  # type: ignore
-        if parsed_url.scheme in ("http", "https"):
-            return URLFile(value)  # type: ignore
-        raise ValueError(
-            f"'{parsed_url.scheme}' is not a valid URL scheme. 'data', 'http', or 'https' is supported."
-        )
-
-    @classmethod
-    def serialize(cls, value: Any) -> Any:
-        if isinstance(value, DataURLFile):
-            value.value.seek(0)
-            data = value.value.read()
-            encoded = base64.b64encode(data).decode("utf-8")
-            mime_type = "application/octet-stream"
-            return f"data:{mime_type};base64,{encoded}"
-        if isinstance(value, URLFile):
-            return value.url
-        return value
-
-    if PYDANTIC_V2:
-        from pydantic import (  # pylint: disable=import-outside-toplevel
-            GetCoreSchemaHandler,
-            TypeAdapter,
-        )
-        from pydantic_core.core_schema import (  # pylint: disable=import-outside-toplevel
-            CoreSchema,
-        )
-
-        @classmethod
-        def __get_pydantic_core_schema__(
-            cls,
-            source_type: Type[Any],  # pylint: disable=unused-argument
-            handler: "pydantic.GetCoreSchemaHandler",  # pylint: disable=unused-argument
-        ) -> "CoreSchema":
-            from pydantic_core import (  # pylint: disable=import-outside-toplevel
-                SchemaSerializer,
-                core_schema,
-            )
-
-            schema = core_schema.no_info_after_validator_function(
-                cls.validate,
-                core_schema.any_schema(),
-                serialization=core_schema.plain_serializer_function_ser_schema(
-                    cls.serialize,
-                    info_arg=False,
-                    return_schema=core_schema.any_schema(),
-                    when_used="json",
-                ),
-            )
-
-            # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
-            cls.__pydantic_serializer__ = SchemaSerializer(schema)
-
-            return schema
-
-        @classmethod
-        def __get_pydantic_json_schema__(
-            cls, core_schema: "CoreSchema", handler: "pydantic.GetJsonSchemaHandler"
-        ) -> "JsonSchemaValue":  # type: ignore # noqa: F821
-            json_schema = handler(core_schema)
-            json_schema.update(type="string", format="uri")
-            return json_schema
-
-    else:
-
-        @classmethod
-        def __get_validators__(cls) -> Iterator[Any]:
-            yield cls.validate
-
-        @classmethod
-        def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
-            """Defines what this type should be in openapi.json"""
-            # https://json-schema.org/understanding-json-schema/reference/string.html#uri-template
-            field_schema.update(type="string", format="uri")
-
-
-class DataURLFile:
-    """
-    DataURLFile is a file-like object constructed from a data URL that can survive pickling/unpickling.
-    """
-
-    value: io.BytesIO
-
-    def __init__(self, value: str) -> None:
-        with urllib.request.urlopen(value, timeout=None) as res:
-            self.value = io.BytesIO(res.read())
-
-    def read(self, size: int = -1) -> bytes:
-        return self.value.read(size)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        return self.value.seek(offset, whence)
-
-    def tell(self) -> int:
-        return self.value.tell()
-
-    def close(self) -> None:
-        self.value.close()
-
-    @property
-    def closed(self) -> bool:
-        return self.value.closed
-
-    def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
-        return self.value.getvalue().decode(encoding, errors)
-
-
-class Path(pathlib.PosixPath):  # pylint: disable=abstract-method
-    validate_always = True
-
-    @classmethod
-    def validate(cls, value: Any) -> pathlib.Path:
-        if isinstance(value, pathlib.Path):
-            return value
-
-        return URLPath(
-            source=value,
-            filename=get_filename(value),
-            fileobj=File.validate(value),
-        )
-
-    if PYDANTIC_V2:
-        from pydantic import GetCoreSchemaHandler
-        from pydantic.json_schema import JsonSchemaValue
-        from pydantic_core import CoreSchema
-
-        @classmethod
-        def __get_pydantic_core_schema__(
-            cls,
-            source: Type[Any],  # pylint: disable=unused-argument
-            handler: "pydantic.GetCoreSchemaHandler",  # pylint: disable=unused-argument
-        ) -> "CoreSchema":
-            from pydantic_core import (  # pylint: disable=import-outside-toplevel
-                core_schema,
-            )
-
-            return core_schema.union_schema(
-                [
-                    core_schema.is_instance_schema(pathlib.Path),
-                    core_schema.no_info_plain_validator_function(cls.validate),
-                ]
-            )
-
-        @classmethod
-        def __get_pydantic_json_schema__(
-            cls, core_schema: "CoreSchema", handler: "pydantic.GetJsonSchemaHandler"
-        ) -> "JsonSchemaValue":  # type: ignore # noqa: F821
-            json_schema = handler(core_schema)
-            json_schema.update(type="string", format="uri")
-            return json_schema
-    else:
-
-        @classmethod
-        def __get_validators__(cls) -> Iterator[Any]:
-            yield cls.validate
-
-        @classmethod
-        def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
-            """Defines what this type should be in openapi.json"""
-            # https://json-schema.org/understanding-json-schema/reference/string.html#uri-template
-            field_schema.update(type="string", format="uri")
-
-
-class URLPath(pathlib.PosixPath):  # pylint: disable=abstract-method
-    """
-    URLPath is a nasty hack to ensure that we can defer the downloading of a
-    URL passed as a path until later in prediction dispatch.
-
-    It subclasses pathlib.PosixPath only so that it can pass isinstance(_,
-    pathlib.Path) checks.
-    """
-
-    _path: Optional[Path]
-
-    def __init__(self, *, source: str, filename: str, fileobj: io.IOBase) -> None:  # pylint: disable=super-init-not-called
-        self.source = source
-        self.filename = filename
-        self.fileobj = fileobj
-
-        self._path = None
-
-    def convert(self) -> Path:
-        if self._path is None:
-            dest = tempfile.NamedTemporaryFile(suffix=self.filename, delete=False)  # pylint: disable=consider-using-with
-            shutil.copyfileobj(self.fileobj, dest)
-            self._path = Path(dest.name)
-        return self._path
-
-    def unlink(self, missing_ok: bool = False) -> None:
-        if self._path:
-            self._path.unlink(missing_ok=missing_ok)
-
-    def __str__(self) -> str:
-        # FastAPI's jsonable_encoder will encode subclasses of pathlib.Path by
-        # calling str() on them
-        return self.source
-
-
-class URLFile:
-    """
-    URLFile is a file-like object constructed from a URL that can survive pickling/unpickling.
-    It lazily loads the content from the URL when needed.
-    """
-
-    url: str
-    _content: Optional[bytes]
-    _position: int
-
-    def __init__(self, url: str) -> None:
-        self.url = url
-        self._content = None
-        self._position = 0
-
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"url": self.url}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self.url = state["url"]
-        self._content = None
-        self._position = 0
-
-    def _load_content(self) -> None:
-        if self._content is None:
-            resp = requests.get(self.url, stream=True, timeout=None)
-            resp.raise_for_status()
-            self._content = resp.content
-
-    def read(self, size: int = -1) -> bytes:
-        self._load_content()
-
-        if self._content is None:
-            raise ValueError("URLFile is not open")
-
-        if size < 0:
-            result = self._content[self._position :]
-            self._position = len(self._content)
-        else:
-            result = self._content[self._position : self._position + size]
-            self._position += len(result)
-        return result
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        self._load_content()
-
-        if self._content is None:
-            raise ValueError("URLFile is not open")
-
-        if whence == io.SEEK_SET:
-            self._position = offset
-        elif whence == io.SEEK_CUR:
-            self._position += offset
-        elif whence == io.SEEK_END:
-            self._position = len(self._content) + offset
-        return self._position
-
-    def tell(self) -> int:
-        return self._position
-
-    def close(self) -> None:
-        self._content = None
-        self._position = 0
-
-    def __enter__(self) -> "URLFile":
-        return self
-
-    def __exit__(
-        self,
-        exc_type: Optional[Type[BaseException]],
-        exc_value: Optional[BaseException],
-        traceback: Optional[TracebackType],
-    ) -> None:
-        self.close()
-
-    def __repr__(self) -> str:
-        return f"<{type(self).__name__} for {self.url!r}>"
-
-
-def get_filename(url: str) -> str:
-    parsed_url = urllib.parse.urlparse(url)
-
-    if parsed_url.scheme == "data":
-        with urllib.request.urlopen(url) as resp:  # noqa: S310
-            mime_type = resp.headers.get_content_type()
-            extension = mimetypes.guess_extension(mime_type)
-            if extension is None:
-                return "file"
-            return "file" + extension
-
-    basename = os.path.basename(parsed_url.path)
-    basename = urllib.parse.unquote_plus(basename)
-
-    # If the filename is too long, we truncate it (appending '~' to denote the
-    # truncation) while preserving the file extension.
-    # - truncate it
-    # - append a tilde
-    # - preserve the file extension
-    if _len_bytes(basename) > FILENAME_MAX_LENGTH:
-        basename = _truncate_filename_bytes(basename, length=FILENAME_MAX_LENGTH)
-
-    for c in FILENAME_ILLEGAL_CHARS:
-        basename = basename.replace(c, "_")
-
-    return basename
-
-
 Item = TypeVar("Item")
 
 
@@ -450,9 +94,15 @@ class ConcatenateIterator(Iterator[Item]):  # pylint: disable=abstract-method
         return value
 
     if PYDANTIC_V2:
-        from pydantic import GetCoreSchemaHandler
-        from pydantic.json_schema import JsonSchemaValue
-        from pydantic_core import CoreSchema
+        from pydantic import (  # pylint: disable=import-outside-toplevel
+            GetCoreSchemaHandler,
+        )
+        from pydantic.json_schema import (  # pylint: disable=import-outside-toplevel
+            JsonSchemaValue,
+        )
+        from pydantic_core import (  # pylint: disable=import-outside-toplevel
+            CoreSchema,
+        )
 
         @classmethod
         def __get_pydantic_core_schema__(
@@ -504,6 +154,686 @@ class ConcatenateIterator(Iterator[Item]):  # pylint: disable=abstract-method
                     "x-cog-array-display": "concatenate",
                 }
             )
+
+
+class Secret(pydantic.SecretStr):
+    if PYDANTIC_V2:
+        from pydantic.json_schema import (  # pylint: disable=import-outside-toplevel
+            JsonSchemaValue,
+        )
+        from pydantic_core import CoreSchema  # pylint: disable=import-outside-toplevel
+
+        @classmethod
+        def __get_pydantic_json_schema__(
+            cls, core_schema: CoreSchema, handler: Any
+        ) -> JsonSchemaValue:
+            json_schema = handler(core_schema)
+            cls._update_schema(json_schema)
+            return json_schema
+    else:
+
+        @classmethod
+        def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
+            """Defines what this type should be in openapi.json"""
+            cls._update_schema(field_schema)
+
+    @classmethod
+    def _update_schema(cls, schema: Dict[str, Any]) -> None:
+        schema.update(
+            {
+                "type": "string",
+                "format": "password",
+                "x-cog-secret": True,
+            }
+        )
+
+
+if PYDANTIC_V2:
+    from pydantic import TypeAdapter
+    from pydantic_core.core_schema import (  # pylint: disable=import-outside-toplevel
+        CoreSchema,
+    )
+
+    class IOBaseMeta(type(io.IOBase)):
+        @classmethod
+        def __instancecheck__(cls, instance: Any) -> bool:
+            return isinstance(instance, io.IOBase)
+
+    class File(metaclass=IOBaseMeta):  # type: ignore
+        url: Optional[str]
+        content_type: Optional[str]
+        name: Optional[str]
+        size: Optional[int]
+        _data: Optional[bytes] = None
+        _closed: bool = False
+
+        def __init__(
+            self,
+            url: Optional[str] = None,
+            content_type: Optional[str] = None,
+            file_name: Optional[str] = None,
+        ) -> None:
+            self.url = url
+
+            if url and url.startswith("data:"):
+                # Handle data URL
+                header, encoded = url.split(",", 1)
+                self._data = base64.b64decode(encoded)
+
+                if content_type is None:
+                    self.content_type = header.split(";")[0].split(":")[1]
+                else:
+                    self.content_type = content_type
+
+                if file_name is None:
+                    self.file_name = "data_file"  # Default name for data URL
+                else:
+                    self.file_name = file_name
+            else:
+                # Handle regular URL or no URL
+                if content_type is None and url:
+                    # Attempt to derive content_type from URL
+                    _, ext = os.path.splitext(url)
+                    self.content_type = mimetypes.guess_type(ext)[0]
+                else:
+                    self.content_type = content_type
+
+                if file_name is None and url:
+                    # Derive file_name from URL if not provided
+                    self.file_name = os.path.basename(url)
+                else:
+                    self.file_name = file_name
+
+        @property
+        def data(self) -> bytes:
+            if self._data is None:
+                self._data = self._load_data()
+            return self._data
+
+        def _load_data(self) -> bytes:
+            if self.url:
+                resp = requests.get(self.url, stream=True, timeout=None)
+                resp.raise_for_status()
+                resp.raw.decode_content = True
+                return resp.raw.read()
+            raise ValueError("No data or URL provided")
+
+        def __enter__(self) -> "File":
+            return self  # type: ignore
+
+        def __exit__(
+            self,
+            exc_type: Optional[Type[BaseException]],
+            exc_val: Optional[BaseException],
+            exc_tb: Optional[TracebackType],
+        ) -> None:
+            self.close()
+
+        def readable(self) -> bool:
+            return not self._closed
+
+        def seekable(self) -> bool:
+            return False
+
+        def writable(self) -> bool:
+            return False
+
+        def open(self, mode: str = "rb") -> "File":
+            if mode not in ("r", "rb"):
+                raise ValueError(
+                    f"Unsupported mode: {mode}. Only 'r' and 'rb' are allowed."
+                )
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            return self  # type: ignore
+
+        def close(self) -> None:
+            self._closed = True
+
+        def read(self, size: int = -1) -> bytes:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            return self.data[:size] if size > 0 else self.data
+
+        def __fspath__(self) -> str:
+            if self.url and self.url.startswith(("http://", "https://", "file://")):
+                # For URLs, we need to download the file and return a local path
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=self.file_name
+                ) as temp_file:
+                    temp_file.write(self.data)
+                    return temp_file.name
+            elif self.url and self.url.startswith("data:"):
+                # For data URLs, we need to decode and save to a temporary file
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=self.file_name
+                ) as temp_file:
+                    temp_file.write(self.data)
+                    return temp_file.name
+            else:
+                raise ValueError("Cannot convert File to filesystem path")
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls,
+            source_type: Type[Any],  # pylint: disable=unused-argument
+            handler: "pydantic.GetCoreSchemaHandler",  # pylint: disable=unused-argument
+        ) -> "CoreSchema":
+            from pydantic_core import (  # pylint: disable=import-outside-toplevel
+                SchemaSerializer,
+                core_schema,
+            )
+
+            schema = core_schema.json_or_python_schema(
+                json_schema=core_schema.str_schema(),
+                python_schema=core_schema.no_info_after_validator_function(
+                    cls.validate,
+                    core_schema.union_schema(
+                        [
+                            core_schema.str_schema(),
+                            core_schema.bytes_schema(),
+                        ]
+                    ),
+                ),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    cls.serialize,
+                    return_schema=core_schema.str_schema(),
+                    when_used="json",
+                ),
+            )
+
+            # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
+            cls.__pydantic_serializer__ = SchemaSerializer(schema)
+
+            return schema
+
+        @classmethod
+        def __get_pydantic_json_schema__(
+            cls, core_schema: "CoreSchema", handler: "pydantic.GetJsonSchemaHandler"
+        ) -> "JsonSchemaValue":  # type: ignore # noqa: F821
+            json_schema = handler(core_schema)
+            json_schema.update(type="string", format="uri")
+            return json_schema
+
+        @classmethod
+        def validate(cls, value: Any) -> "File":
+            if isinstance(value, str):
+                parsed_url = urllib.parse.urlparse(value)
+                if parsed_url.scheme not in ["http", "https", "data"]:
+                    raise ValueError("value must be a valid URL")
+                return cls(url=parsed_url.geturl())  # type: ignore
+            elif isinstance(value, io.IOBase):
+                data = value.read()
+                encoded = base64.b64encode(data).decode()
+                return cls(url=f"data:application/octet-stream;base64,{encoded}")  # type: ignore
+            return value
+
+        @classmethod
+        def serialize(cls, value: "File") -> str:
+            if hasattr(value, "url"):
+                return value.url  # type: ignore
+            else:
+                return str(value)
+
+    # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
+    _ = TypeAdapter(File)
+
+    class PosixPathMeta(type(pathlib.PosixPath)):
+        @classmethod
+        def __instancecheck__(cls, instance: Any) -> bool:
+            return isinstance(instance, pathlib.PosixPath)
+
+    class Path(metaclass=PosixPathMeta):  # type: ignore
+        def __init__(
+            self,
+            path: Union[str, pathlib.Path],
+            content_type: Optional[str] = None,
+        ) -> None:
+            self._path = pathlib.Path(path).absolute()
+            self.url = f"file://{self._path}"
+            self.content_type = content_type or mimetypes.guess_type(self._path)[0]
+            self.file_name = self._path.name
+            self._file_handle: Optional[IO[Any]] = None
+            self._position: int = 0
+            self._mode: str = "rb+"
+            self._closed: bool = False
+
+        def _load_data(self) -> bytes:
+            with open(self._path, "rb") as f:
+                return f.read()
+
+        def __fspath__(self) -> str:
+            return str(self._path)
+
+        def open(self, mode: str = "rb+", encoding: Optional[str] = None) -> "Path":
+            if mode not in ("r", "rb", "r+", "rb+", "w", "wb", "w+", "wb+"):
+                raise ValueError(
+                    f"Unsupported mode: {mode}. Only 'r', 'rb', 'r+', 'rb+', 'w', 'wb', 'w+', 'wb+' are allowed."
+                )
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            if self._file_handle is None:
+                self._file_handle = open(self._path, mode, encoding=encoding)  # pylint: disable=consider-using-with
+                self._mode = mode
+            return self  # type: ignore
+
+        def close(self) -> None:
+            if self._file_handle:
+                self._file_handle.close()
+            self._file_handle = None
+            self._position = 0
+            self._closed = True
+
+        def read(self, size: int = -1) -> Union[str, bytes]:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            if self._file_handle is None:
+                self.open()
+            assert self._file_handle is not None
+            data = self._file_handle.read(size)
+            self._position = self._file_handle.tell()
+            return data
+
+        def write(self, data: Union[str, bytes]) -> int:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            if self._file_handle is None:
+                self.open("wb+")
+            assert self._file_handle is not None
+            if isinstance(data, str):
+                data = data.encode()
+            bytes_written = self._file_handle.write(data)
+            self._position = self._file_handle.tell()
+            return bytes_written
+
+        def seekable(self) -> bool:
+            return True
+
+        def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            if self._file_handle is None:
+                self.open()
+            assert self._file_handle is not None
+            position = self._file_handle.seek(offset, whence)
+            self._position = position
+            return position
+
+        def tell(self) -> int:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            return self._position
+
+        def writable(self) -> bool:
+            return self._mode.endswith("+") or self._mode.startswith("w")
+
+        # Implement pathlib.PosixPath-like methods
+        def __truediv__(self, key: Union[str, pathlib.Path]) -> "Path":
+            return Path(self._path / key)
+
+        def __rtruediv__(self, key: Union[str, pathlib.Path]) -> "Path":
+            return Path(pathlib.Path(key) / self._path)
+
+        @property
+        def parent(self) -> "Path":
+            return Path(self._path.parent)
+
+        @property
+        def name(self) -> str:
+            return self._path.name
+
+        @property
+        def suffix(self) -> str:
+            return self._path.suffix
+
+        @property
+        def stem(self) -> str:
+            return self._path.stem
+
+        def is_file(self) -> bool:
+            return self._path.is_file()
+
+        def is_dir(self) -> bool:
+            return self._path.is_dir()
+
+        def exists(self) -> bool:
+            return self._path.exists()
+
+        def glob(self, pattern: str) -> Iterator["Path"]:
+            return (Path(p) for p in self._path.glob(pattern))
+
+        def rglob(self, pattern: str) -> Iterator["Path"]:
+            return (Path(p) for p in self._path.rglob(pattern))
+
+        def relative_to(self, other: Union[str, pathlib.Path]) -> "Path":
+            return Path(self._path.relative_to(other))
+
+        def resolve(self) -> "Path":
+            return Path(self._path.resolve())
+
+        def absolute(self) -> "Path":
+            return Path(self._path.absolute())
+
+        @classmethod
+        def cwd(cls) -> "Path":
+            return cls(pathlib.Path.cwd())  # type: ignore
+
+        @classmethod
+        def home(cls) -> "Path":
+            return cls(pathlib.Path.home())  # type: ignore
+
+        def __str__(self) -> str:
+            return str(self._path)
+
+        def __eq__(self, other: object) -> bool:
+            if isinstance(other, (Path, pathlib.Path, str)):
+                return self._path == pathlib.Path(other)
+            return NotImplemented
+
+        def __lt__(self, other: Union["Path", pathlib.Path, str]) -> bool:
+            if isinstance(other, (Path, pathlib.Path, str)):  # type: ignore
+                return self._path < pathlib.Path(other)
+            return NotImplemented
+
+        def __le__(self, other: Union["Path", pathlib.Path, str]) -> bool:
+            if isinstance(other, (Path, pathlib.Path, str)):  # type: ignore
+                return self._path <= pathlib.Path(other)
+            return NotImplemented
+
+        def __gt__(self, other: Union["Path", pathlib.Path, str]) -> bool:
+            if isinstance(other, (Path, pathlib.Path, str)):  # type: ignore
+                return self._path > pathlib.Path(other)
+            return NotImplemented
+
+        def __ge__(self, other: Union["Path", pathlib.Path, str]) -> bool:
+            if isinstance(other, (Path, pathlib.Path, str)):  # type: ignore
+                return self._path >= pathlib.Path(other)
+            return NotImplemented
+
+        def __hash__(self) -> int:
+            return hash(self._path)
+
+        def __enter__(self) -> "Path":
+            return self.open()
+
+        def __exit__(
+            self,
+            exc_type: Optional[Type[BaseException]],
+            exc_val: Optional[BaseException],
+            exc_tb: Optional[TracebackType],
+        ) -> None:
+            self.close()
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls,
+            source_type: Type[Any],  # pylint: disable=unused-argument
+            handler: "pydantic.GetCoreSchemaHandler",  # pylint: disable=unused-argument
+        ) -> "CoreSchema":
+            from pydantic_core import (  # pylint: disable=import-outside-toplevel
+                SchemaSerializer,
+                core_schema,
+            )
+
+            schema = core_schema.json_or_python_schema(
+                json_schema=core_schema.str_schema(),
+                python_schema=core_schema.no_info_after_validator_function(
+                    cls.validate,
+                    core_schema.str_schema(),
+                ),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    cls.serialize,
+                    return_schema=core_schema.str_schema(),
+                    when_used="json",
+                ),
+            )
+
+            # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
+            cls.__pydantic_serializer__ = SchemaSerializer(schema)
+
+            return schema
+
+        @classmethod
+        def __get_pydantic_json_schema__(
+            cls, core_schema: "CoreSchema", handler: "pydantic.GetJsonSchemaHandler"
+        ) -> "JsonSchemaValue":  # type: ignore # noqa: F821
+            json_schema = handler(core_schema)
+
+            # FIXME: This matches previous behavior, but it's not correct.
+            json_schema.update(type="string", format="uri")
+
+            return json_schema
+
+        @classmethod
+        def validate(cls, value: Any) -> "Path":
+            if isinstance(value, str):
+                if value.startswith(("data:", "http:", "https:")):
+                    return File(url=value)  # type: ignore
+
+            if isinstance(value, cls):
+                return value  # type: ignore
+            if isinstance(value, (str, pathlib.Path)):
+                return cls(value)  # type: ignore
+            raise ValueError(f"Cannot convert {type(value)} to Path")
+
+        @classmethod
+        def serialize(cls, value: "Path") -> str:
+            return str(value)  # type: ignore
+
+    # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
+    _ = TypeAdapter(Path)
+
+    class URLPath(Path):  # type: ignore
+        def __init__(
+            self,
+            source: str,
+            filename: str,
+            fileobj: io.IOBase,
+        ) -> None:
+            self.source = source
+            self.filename = filename
+            self.fileobj = fileobj
+            self._path: Optional[pathlib.Path] = None
+            super().__init__(self.source)
+
+        def _get_temp_path(self) -> pathlib.Path:
+            if self._path is None:
+                with tempfile.NamedTemporaryFile(
+                    suffix=self.filename, delete=False
+                ) as temp_file:
+                    shutil.copyfileobj(self.fileobj, temp_file)
+                    self._path = pathlib.Path(temp_file.name)
+            return self._path
+
+        def convert(self) -> Path:
+            return Path(self._get_temp_path())  # type: ignore
+
+        def unlink(self, missing_ok: bool = False) -> None:
+            if self._path:
+                self._path.unlink(missing_ok=missing_ok)
+
+        def __str__(self) -> str:
+            return self.source
+
+
+else:
+
+    class File(io.IOBase):
+        """Deprecated: use Path instead."""
+
+        validate_always = True
+
+        @classmethod
+        def __get_validators__(cls) -> Iterator[Any]:
+            yield cls.validate
+
+        @classmethod
+        def validate(cls, value: Any) -> io.IOBase:
+            if isinstance(value, io.IOBase):
+                return value
+
+            parsed_url = urllib.parse.urlparse(value)
+            if parsed_url.scheme == "data":
+                with urllib.request.urlopen(value) as res:  # noqa: S310
+                    return io.BytesIO(res.read())
+            if parsed_url.scheme in ("http", "https"):
+                return URLFile(value)
+            raise ValueError(
+                f"'{parsed_url.scheme}' is not a valid URL scheme. 'data', 'http', or 'https' is supported."
+            )
+
+        @classmethod
+        def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
+            """Defines what this type should be in openapi.json"""
+            # https://json-schema.org/understanding-json-schema/reference/string.html#uri-template
+            field_schema.update(type="string", format="uri")
+
+    class Path(pathlib.PosixPath):  # pylint: disable=abstract-method
+        validate_always = True
+
+        @classmethod
+        def __get_validators__(cls) -> Iterator[Any]:
+            yield cls.validate
+
+        @classmethod
+        def validate(cls, value: Any) -> pathlib.Path:
+            if isinstance(value, pathlib.Path):
+                return value
+
+            return URLPath(
+                source=value,
+                filename=get_filename(value),
+                fileobj=File.validate(value),
+            )
+
+        @classmethod
+        def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
+            """Defines what this type should be in openapi.json"""
+            # https://json-schema.org/understanding-json-schema/reference/string.html#uri-template
+            field_schema.update(type="string", format="uri")
+
+    class URLPath(pathlib.PosixPath):  # pylint: disable=abstract-method
+        """
+        URLPath is a nasty hack to ensure that we can defer the downloading of a
+        URL passed as a path until later in prediction dispatch.
+
+        It subclasses pathlib.PosixPath only so that it can pass isinstance(_,
+        pathlib.Path) checks.
+        """
+
+        _path: Optional[Path]
+
+        def __init__(self, *, source: str, filename: str, fileobj: io.IOBase) -> None:  # pylint: disable=super-init-not-called
+            self.source = source
+            self.filename = filename
+            self.fileobj = fileobj
+
+            self._path = None
+
+        def convert(self) -> Path:
+            if self._path is None:
+                dest = tempfile.NamedTemporaryFile(suffix=self.filename, delete=False)  # pylint: disable=consider-using-with
+                shutil.copyfileobj(self.fileobj, dest)
+                self._path = Path(dest.name)
+            return self._path
+
+        def unlink(self, missing_ok: bool = False) -> None:
+            if self._path:
+                self._path.unlink(missing_ok=missing_ok)
+
+        def __str__(self) -> str:
+            # FastAPI's jsonable_encoder will encode subclasses of pathlib.Path by
+            # calling str() on them
+            return self.source
+
+    class URLFile(io.IOBase):
+        """
+        URLFile is a proxy object for a :class:`urllib3.response.HTTPResponse`
+        object that is created lazily. It's a file-like object constructed from a
+        URL that can survive pickling/unpickling.
+        """
+
+        __slots__ = ("__target__", "__url__")
+
+        def __init__(self, url: str) -> None:
+            object.__setattr__(self, "__url__", url)
+
+        # We provide __getstate__ and __setstate__ explicitly to ensure that the
+        # object is always picklable.
+        def __getstate__(self) -> Dict[str, Any]:
+            return {"url": object.__getattribute__(self, "__url__")}
+
+        def __setstate__(self, state: Dict[str, Any]) -> None:
+            object.__setattr__(self, "__url__", state["url"])
+
+        # Proxy getattr/setattr/delattr through to the response object.
+        def __setattr__(self, name: str, value: Any) -> None:
+            if hasattr(type(self), name):
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self.__wrapped__, name, value)
+
+        def __getattr__(self, name: str) -> Any:
+            if name in ("__target__", "__wrapped__", "__url__"):
+                raise AttributeError(name)
+            return getattr(self.__wrapped__, name)
+
+        def __delattr__(self, name: str) -> None:
+            if hasattr(type(self), name):
+                object.__delattr__(self, name)
+            else:
+                delattr(self.__wrapped__, name)
+
+        # Luckily the only dunder method on HTTPResponse is __iter__
+        def __iter__(self) -> Iterator[bytes]:
+            return iter(self.__wrapped__)
+
+        @property
+        def __wrapped__(self) -> Any:
+            try:
+                return object.__getattribute__(self, "__target__")
+            except AttributeError:
+                url = object.__getattribute__(self, "__url__")
+                resp = requests.get(url, stream=True, timeout=None)
+                resp.raise_for_status()
+                resp.raw.decode_content = True
+                object.__setattr__(self, "__target__", resp.raw)
+                return resp.raw
+
+        def __repr__(self) -> str:
+            try:
+                target = object.__getattribute__(self, "__target__")
+            except AttributeError:
+                return f"<{type(self).__name__} at 0x{id(self):x} for {object.__getattribute__(self, '__url__')!r}>"
+
+            return f"<{type(self).__name__} at 0x{id(self):x} wrapping {target!r}>"
+
+    def get_filename(url: str) -> str:
+        parsed_url = urllib.parse.urlparse(url)
+
+        if parsed_url.scheme == "data":
+            with urllib.request.urlopen(url) as resp:  # noqa: S310
+                mime_type = resp.headers.get_content_type()
+                extension = mimetypes.guess_extension(mime_type)
+                if extension is None:
+                    return "file"
+                return "file" + extension
+
+        basename = os.path.basename(parsed_url.path)
+        basename = urllib.parse.unquote_plus(basename)
+
+        # If the filename is too long, we truncate it (appending '~' to denote the
+        # truncation) while preserving the file extension.
+        # - truncate it
+        # - append a tilde
+        # - preserve the file extension
+        if _len_bytes(basename) > FILENAME_MAX_LENGTH:
+            basename = _truncate_filename_bytes(basename, length=FILENAME_MAX_LENGTH)
+
+        for c in FILENAME_ILLEGAL_CHARS:
+            basename = basename.replace(c, "_")
+
+        return basename
 
 
 def _len_bytes(s: str, encoding: str = "utf-8") -> int:

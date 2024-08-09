@@ -513,7 +513,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
         try:
             response = PredictionResponse(
                 **(
-                    prediction_service.prediction_response.model_dump()
+                    prediction_service.prediction_response.model_dump(mode="json")
                     if PYDANTIC_V2
                     else prediction_service.prediction_response.dict()
                 )

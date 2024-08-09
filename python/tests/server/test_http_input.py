@@ -2,7 +2,6 @@ import base64
 import os
 import threading
 
-import responses
 from cog import schema
 from cog.server.http import Health, create_app
 
@@ -132,14 +131,15 @@ def test_path_temporary_files_are_removed(client, match):
     assert not os.path.exists(temporary_path)
 
 
-@responses.activate
 @uses_predictor("input_path")
-def test_path_input_with_http_url(client, match):
-    responses.add(responses.GET, "http://example.com/foo.txt", body="hello")
+def test_path_input_with_http_url(client, httpserver, match):
+    # Use a real HTTP server instead of responses
+    httpserver.expect_request("/foo.txt").respond_with_data("hello")
     resp = client.post(
         "/predictions",
-        json={"input": {"path": "http://example.com/foo.txt"}},
+        json={"input": {"path": httpserver.url_for("/foo.txt")}},
     )
+    print(resp.json())
     assert resp.json() == match({"output": "txt hello", "status": "succeeded"})
 
 
@@ -165,6 +165,8 @@ def test_multiple_arguments(client, match):
             }
         },
     )
+    print(resp.json())
+
     assert resp.status_code == 200
     assert resp.json() == match({"output": "baz 50 wibble", "status": "succeeded"})
 
