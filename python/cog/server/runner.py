@@ -415,6 +415,13 @@ def _predict(  # pylint: disable=too-many-branches
             log.warn("Failed to download url path from input", exc_info=True)
             return event_handler.response
 
+    if PYDANTIC_V2:
+        for k, v in input_dict.items():
+            # Unwrap pydantic's SerializationIterator
+            if type(v).__name__ == "SerializationIterator":
+                value = next(v)
+                input_dict[k] = io.BytesIO(value)
+
     for event in worker.predict(input_dict, poll=0.1):
         if should_cancel.is_set():
             worker.cancel()
