@@ -1,3 +1,4 @@
+import base64
 import io
 import mimetypes
 import os
@@ -7,8 +8,8 @@ import tempfile
 import urllib.parse
 import urllib.request
 import urllib.response
+from types import TracebackType
 from typing import (
-    TYPE_CHECKING,
     Any,
     Dict,
     Iterator,
@@ -115,46 +116,80 @@ class Secret(pydantic.SecretStr):
             )
 
 
-class File(io.IOBase):
+class IOBaseMeta(type(io.IOBase)):
+    def __instancecheck__(cls, instance: Any) -> bool:
+        return isinstance(instance, (cls, io.IOBase))
+
+
+class File(metaclass=IOBaseMeta):
     """Deprecated: use Path instead."""
 
     validate_always = True
 
     @classmethod
     def validate(cls, value: Any) -> io.IOBase:
-        if isinstance(value, io.IOBase):
-            return value
+        print("!!!! validate", value, type(value))
+        if isinstance(value, DataURLFile):
+            return value  # type: ignore
+        if isinstance(value, URLFile):
+            return value  # type: ignore
 
         parsed_url = urllib.parse.urlparse(value)
         if parsed_url.scheme == "data":
-            with urllib.request.urlopen(value) as res:  # noqa: S310
-                return io.BytesIO(res.read())
+            return DataURLFile(value)  # type: ignore
         if parsed_url.scheme in ("http", "https"):
-            return URLFile(value)
+            return URLFile(value)  # type: ignore
         raise ValueError(
             f"'{parsed_url.scheme}' is not a valid URL scheme. 'data', 'http', or 'https' is supported."
         )
 
+    @classmethod
+    def serialize(cls, value: Any) -> Any:
+        if isinstance(value, DataURLFile):
+            value.value.seek(0)
+            data = value.value.read()
+            encoded = base64.b64encode(data).decode("utf-8")
+            mime_type = "application/octet-stream"
+            return f"data:{mime_type};base64,{encoded}"
+        if isinstance(value, URLFile):
+            return value.url
+        return value
+
     if PYDANTIC_V2:
-        from pydantic import GetCoreSchemaHandler, TypeAdapter
-        from pydantic_core.core_schema import CoreSchema
+        from pydantic import (  # pylint: disable=import-outside-toplevel
+            GetCoreSchemaHandler,
+            TypeAdapter,
+        )
+        from pydantic_core.core_schema import (  # pylint: disable=import-outside-toplevel
+            CoreSchema,
+        )
 
         @classmethod
         def __get_pydantic_core_schema__(
             cls,
-            source: Type[Any],  # pylint: disable=unused-argument
+            source_type: Type[Any],  # pylint: disable=unused-argument
             handler: "pydantic.GetCoreSchemaHandler",  # pylint: disable=unused-argument
         ) -> "CoreSchema":
             from pydantic_core import (  # pylint: disable=import-outside-toplevel
+                SchemaSerializer,
                 core_schema,
             )
 
-            return core_schema.union_schema(
-                [
-                    core_schema.is_instance_schema(io.IOBase),
-                    core_schema.no_info_plain_validator_function(cls.validate),
-                ]
+            schema = core_schema.no_info_after_validator_function(
+                cls.validate,
+                core_schema.any_schema(),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    cls.serialize,
+                    info_arg=False,
+                    return_schema=core_schema.any_schema(),
+                    when_used="json",
+                ),
             )
+
+            # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
+            cls.__pydantic_serializer__ = SchemaSerializer(schema)
+
+            return schema
 
         @classmethod
         def __get_pydantic_json_schema__(
@@ -175,6 +210,37 @@ class File(io.IOBase):
             """Defines what this type should be in openapi.json"""
             # https://json-schema.org/understanding-json-schema/reference/string.html#uri-template
             field_schema.update(type="string", format="uri")
+
+
+class DataURLFile:
+    """
+    DataURLFile is a file-like object constructed from a data URL that can survive pickling/unpickling.
+    """
+
+    value: io.BytesIO
+
+    def __init__(self, value: str) -> None:
+        with urllib.request.urlopen(value, timeout=None) as res:
+            self.value = io.BytesIO(res.read())
+
+    def read(self, size: int = -1) -> bytes:
+        return self.value.read(size)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self.value.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self.value.tell()
+
+    def close(self) -> None:
+        self.value.close()
+
+    @property
+    def closed(self) -> bool:
+        return self.value.closed
+
+    def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
+        return self.value.getvalue().decode(encoding, errors)
 
 
 class Path(pathlib.PosixPath):  # pylint: disable=abstract-method
@@ -268,67 +334,83 @@ class URLPath(pathlib.PosixPath):  # pylint: disable=abstract-method
         return self.source
 
 
-class URLFile(io.IOBase):
+class URLFile:
     """
-    URLFile is a proxy object for a :class:`urllib3.response.HTTPResponse`
-    object that is created lazily. It's a file-like object constructed from a
-    URL that can survive pickling/unpickling.
+    URLFile is a file-like object constructed from a URL that can survive pickling/unpickling.
+    It lazily loads the content from the URL when needed.
     """
 
-    __slots__ = ("__target__", "__url__")
+    url: str
+    _content: Optional[bytes]
+    _position: int
 
     def __init__(self, url: str) -> None:
-        object.__setattr__(self, "__url__", url)
+        self.url = url
+        self._content = None
+        self._position = 0
 
-    # We provide __getstate__ and __setstate__ explicitly to ensure that the
-    # object is always picklable.
     def __getstate__(self) -> Dict[str, Any]:
-        return {"url": object.__getattribute__(self, "__url__")}
+        return {"url": self.url}
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        object.__setattr__(self, "__url__", state["url"])
+        self.url = state["url"]
+        self._content = None
+        self._position = 0
 
-    # Proxy getattr/setattr/delattr through to the response object.
-    def __setattr__(self, name: str, value: Any) -> None:
-        if hasattr(type(self), name):
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self.__wrapped__, name, value)
-
-    def __getattr__(self, name: str) -> Any:
-        if name in ("__target__", "__wrapped__", "__url__"):
-            raise AttributeError(name)
-        return getattr(self.__wrapped__, name)
-
-    def __delattr__(self, name: str) -> None:
-        if hasattr(type(self), name):
-            object.__delattr__(self, name)
-        else:
-            delattr(self.__wrapped__, name)
-
-    # Luckily the only dunder method on HTTPResponse is __iter__
-    def __iter__(self) -> Iterator[bytes]:
-        return iter(self.__wrapped__)
-
-    @property
-    def __wrapped__(self) -> Any:
-        try:
-            return object.__getattribute__(self, "__target__")
-        except AttributeError:
-            url = object.__getattribute__(self, "__url__")
-            resp = requests.get(url, stream=True, timeout=None)
+    def _load_content(self) -> None:
+        if self._content is None:
+            resp = requests.get(self.url, stream=True, timeout=None)
             resp.raise_for_status()
-            resp.raw.decode_content = True
-            object.__setattr__(self, "__target__", resp.raw)
-            return resp.raw
+            self._content = resp.content
+
+    def read(self, size: int = -1) -> bytes:
+        self._load_content()
+
+        if self._content is None:
+            raise ValueError("URLFile is not open")
+
+        if size < 0:
+            result = self._content[self._position :]
+            self._position = len(self._content)
+        else:
+            result = self._content[self._position : self._position + size]
+            self._position += len(result)
+        return result
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        self._load_content()
+
+        if self._content is None:
+            raise ValueError("URLFile is not open")
+
+        if whence == io.SEEK_SET:
+            self._position = offset
+        elif whence == io.SEEK_CUR:
+            self._position += offset
+        elif whence == io.SEEK_END:
+            self._position = len(self._content) + offset
+        return self._position
+
+    def tell(self) -> int:
+        return self._position
+
+    def close(self) -> None:
+        self._content = None
+        self._position = 0
+
+    def __enter__(self) -> "URLFile":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
+        self.close()
 
     def __repr__(self) -> str:
-        try:
-            target = object.__getattribute__(self, "__target__")
-        except AttributeError:
-            return f"<{type(self).__name__} at 0x{id(self):x} for {object.__getattribute__(self, '__url__')!r}>"
-
-        return f"<{type(self).__name__} at 0x{id(self):x} wrapping {target!r}>"
+        return f"<{type(self).__name__} for {self.url!r}>"
 
 
 def get_filename(url: str) -> str:
