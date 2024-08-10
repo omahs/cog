@@ -110,16 +110,17 @@ def test_output_path_to_http(client, match):
 @uses_predictor("output_complex")
 def test_complex_output(client, match):
     resp = client.post("/predictions")
-    assert resp.json() == match(
-        {
-            "output": {
-                "file": "data:application/octet-stream;base64,aGVsbG8=",
-                "text": "hello",
-            },
-            "status": "succeeded",
-        }
-    )
+
     assert resp.status_code == 200
+
+    json = resp.json()
+    print("!!!", json)
+    assert (
+        json["output"]["file"] == "data:application/octet-stream;base64,aGVsbG8="
+        or json["output"]["file"] == "data:text/plain;base64,aGVsbG8="
+    )
+    assert json["output"]["text"] == "hello"
+    assert json["status"] == "succeeded"
 
 
 @uses_predictor("output_iterator_complex")

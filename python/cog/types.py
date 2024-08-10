@@ -326,14 +326,8 @@ if PYDANTIC_V2:
 
             schema = core_schema.json_or_python_schema(
                 json_schema=core_schema.str_schema(),
-                python_schema=core_schema.no_info_after_validator_function(
+                python_schema=core_schema.no_info_plain_validator_function(
                     cls.validate,
-                    core_schema.union_schema(
-                        [
-                            core_schema.str_schema(),
-                            core_schema.bytes_schema(),
-                        ]
-                    ),
                 ),
                 serialization=core_schema.plain_serializer_function_ser_schema(
                     cls.serialize,
@@ -342,7 +336,6 @@ if PYDANTIC_V2:
                 ),
             )
 
-            # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
             cls.__pydantic_serializer__ = SchemaSerializer(schema)
 
             return schema
@@ -362,18 +355,30 @@ if PYDANTIC_V2:
                 if parsed_url.scheme not in ["http", "https", "data"]:
                     raise ValueError("value must be a valid URL")
                 return cls(url=parsed_url.geturl())  # type: ignore
-            elif isinstance(value, io.IOBase):
-                data = value.read()
-                encoded = base64.b64encode(data).decode()
-                return cls(url=f"data:application/octet-stream;base64,{encoded}")  # type: ignore
-            return value
+            if isinstance(value, io.IOBase):  # type: ignore
+                if isinstance(value, io.FileIO):
+                    return cls(url=f"file://{value.name}")  # type: ignore
+                elif isinstance(value, io.BytesIO):
+                    data = value.read()
+                    encoded = base64.b64encode(data).decode()
+                    return cls(url=f"data:application/octet-stream;base64,{encoded}")  # type: ignore
+                elif isinstance(value, io.StringIO):
+                    data = value.read().encode("utf-8")
+                    encoded = base64.b64encode(data).decode()
+                    return cls(url=f"data:text/plain;base64,{encoded}")  # type: ignore
+            raise ValueError(f"Unsupported file type: {type(value)}")
 
         @classmethod
         def serialize(cls, value: "File") -> str:
-            if hasattr(value, "url"):
+            if hasattr(value, "url") and value.url:
                 return value.url  # type: ignore
+            if hasattr(value, "_data") and value._data:
+                # If there's no URL but we have data, create a data URL
+                encoded = base64.b64encode(value._data).decode()
+                mime_type = value.content_type or "application/octet-stream"
+                return f"data:{mime_type};base64,{encoded}"
             else:
-                return str(value)
+                raise ValueError("File has no URL or data to serialize")
 
     # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
     _ = TypeAdapter(File)
