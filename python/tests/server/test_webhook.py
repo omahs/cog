@@ -1,33 +1,22 @@
 import requests
-import responses
+import pytest
+from pytest_httpserver import HTTPServer
 from cog.schema import PredictionResponse, Status, WebhookEvent
 from cog.server.webhook import webhook_caller, webhook_caller_filtered
-from responses import registries
 
 
-@responses.activate
-def test_webhook_caller_basic():
-    c = webhook_caller("https://example.com/webhook/123")
+def test_webhook_caller_basic(httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/webhook/123",
+        method="POST",
+        json={
+            "status": Status.PROCESSING,
+            "output": {"animal": "giraffe"},
+            "input": {},
+        },
+    ).respond_with_data(status=200)
 
-    payload = {
-        "status": Status.PROCESSING,
-        "output": {"animal": "giraffe"},
-        "input": {},
-    }
-    response = PredictionResponse(**payload)
-
-    responses.post(
-        "https://example.com/webhook/123",
-        json=payload,
-        status=200,
-    )
-
-    c(response)
-
-
-@responses.activate
-def test_webhook_caller_non_terminal_does_not_retry():
-    c = webhook_caller("https://example.com/webhook/123")
+    c = webhook_caller(httpserver.url_for("/webhook/123"))
 
     payload = {
         "status": Status.PROCESSING,
@@ -36,47 +25,71 @@ def test_webhook_caller_non_terminal_does_not_retry():
     }
     response = PredictionResponse(**payload)
 
-    responses.post(
-        "https://example.com/webhook/123",
-        json=payload,
-        status=429,
-    )
+    c(response)
+
+
+def test_webhook_caller_non_terminal_does_not_retry(httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/webhook/123",
+        method="POST",
+        json={
+            "status": Status.PROCESSING,
+            "output": {"animal": "giraffe"},
+            "input": {},
+        },
+    ).respond_with_data(status=429)
+
+    c = webhook_caller(httpserver.url_for("/webhook/123"))
+
+    payload = {
+        "status": Status.PROCESSING,
+        "output": {"animal": "giraffe"},
+        "input": {},
+    }
+    response = PredictionResponse(**payload)
 
     c(response)
 
 
-@responses.activate(registry=registries.OrderedRegistry)
-def test_webhook_caller_terminal_retries():
-    c = webhook_caller("https://example.com/webhook/123")
-    resps = []
-
+def test_webhook_caller_terminal_retries(httpserver: HTTPServer):
     payload = {"status": Status.SUCCEEDED, "output": {"animal": "giraffe"}, "input": {}}
-    response = PredictionResponse(**payload)
 
-    for _ in range(2):
-        resps.append(
-            responses.post(
-                "https://example.com/webhook/123",
-                json=payload,
-                status=429,
-            )
-        )
-    resps.append(
-        responses.post(
-            "https://example.com/webhook/123",
-            json=payload,
-            status=200,
-        )
-    )
+    httpserver.expect_ordered_request(
+        "/webhook/123",
+        method="POST",
+        json=payload,
+    ).respond_with_data(status=429)
+
+    httpserver.expect_ordered_request(
+        "/webhook/123",
+        method="POST",
+        json=payload,
+    ).respond_with_data(status=429)
+
+    httpserver.expect_ordered_request(
+        "/webhook/123",
+        method="POST",
+        json=payload,
+    ).respond_with_data(status=200)
+
+    c = webhook_caller(httpserver.url_for("/webhook/123"))
+    response = PredictionResponse(**payload)
 
     c(response)
 
-    assert all(r.call_count == 1 for r in resps)
 
+def test_webhook_includes_user_agent(httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/webhook/123",
+        method="POST",
+        json={
+            "status": Status.PROCESSING,
+            "output": {"animal": "giraffe"},
+            "input": {},
+        },
+    ).respond_with_data(status=200)
 
-@responses.activate
-def test_webhook_includes_user_agent():
-    c = webhook_caller("https://example.com/webhook/123")
+    c = webhook_caller(httpserver.url_for("/webhook/123"))
 
     payload = {
         "status": Status.PROCESSING,
@@ -85,40 +98,37 @@ def test_webhook_includes_user_agent():
     }
     response = PredictionResponse(**payload)
 
-    responses.post(
-        "https://example.com/webhook/123",
-        json=payload,
-        status=200,
-    )
-
     c(response)
 
-    assert len(responses.calls) == 1
-    user_agent = responses.calls[0].request.headers["user-agent"]
+    assert len(httpserver.log) == 1
+    user_agent = httpserver.log[0].headers["user-agent"]
     assert user_agent.startswith("cog-worker/")
 
 
-@responses.activate
-def test_webhook_caller_filtered_basic():
+def test_webhook_caller_filtered_basic(httpserver: HTTPServer):
     events = WebhookEvent.default_events()
-    c = webhook_caller_filtered("https://example.com/webhook/123", events)
+
+    httpserver.expect_request(
+        "/webhook/123",
+        method="POST",
+        json={
+            "status": Status.PROCESSING,
+            "animal": "giraffe",
+            "input": {},
+        },
+    ).respond_with_data(status=200)
+
+    c = webhook_caller_filtered(httpserver.url_for("/webhook/123"), events)
 
     payload = {"status": Status.PROCESSING, "animal": "giraffe", "input": {}}
     response = PredictionResponse(**payload)
 
-    responses.post(
-        "https://example.com/webhook/123",
-        json=payload,
-        status=200,
-    )
-
     c(response, WebhookEvent.LOGS)
 
 
-@responses.activate
-def test_webhook_caller_filtered_omits_filtered_events():
+def test_webhook_caller_filtered_omits_filtered_events(httpserver: HTTPServer):
     events = {WebhookEvent.COMPLETED}
-    c = webhook_caller_filtered("https://example.com/webhook/123", events)
+    c = webhook_caller_filtered(httpserver.url_for("/webhook/123"), events)
 
     payload = {
         "status": Status.PROCESSING,
@@ -129,18 +139,15 @@ def test_webhook_caller_filtered_omits_filtered_events():
 
     c(response, WebhookEvent.LOGS)
 
+    # Assert that no request was made
+    assert len(httpserver.log) == 0
 
-@responses.activate
-def test_webhook_caller_connection_errors():
-    connerror_resp = responses.Response(
-        responses.POST,
-        "https://example.com/webhook/123",
-        status=200,
-    )
-    connerror_exc = requests.ConnectionError("failed to connect")
-    connerror_exc.response = connerror_resp
-    connerror_resp.body = connerror_exc
-    responses.add(connerror_resp)
+
+def test_webhook_caller_connection_errors(httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/webhook/123",
+        method="POST",
+    ).respond_with_data(status=200)
 
     payload = {
         "status": Status.PROCESSING,
@@ -149,6 +156,6 @@ def test_webhook_caller_connection_errors():
     }
     response = PredictionResponse(**payload)
 
-    c = webhook_caller("https://example.com/webhook/123")
+    c = webhook_caller(httpserver.url_for("/webhook/123"))
     # this should not raise an error
     c(response)

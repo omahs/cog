@@ -1,7 +1,8 @@
 import base64
 import io
 
-import responses
+import pytest
+from pytest_httpserver import HTTPServer
 from cog.types import PYDANTIC_V2
 from responses.matchers import multipart_matcher
 
@@ -26,48 +27,44 @@ def test_output_file(client, match):
     )
 
 
-@responses.activate
 @uses_predictor("output_file_named")
-def test_output_file_to_http(client, match):
-    responses.add(
-        responses.PUT,
-        "http://example.com/upload/foo.txt",
-        status=201,
-        match=[multipart_matcher({"file": ("foo.txt", b"hello")})],
-    )
+def test_output_file_to_http(client, match, httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/upload/foo.txt", method="PUT", data={"file": ("foo.txt", b"hello")}
+    ).respond_with_data(status=201)
 
-    res = client.post(
-        "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
-    )
+    upload_url = httpserver.url_for("/upload/")
+
+    res = client.post("/predictions", json={"output_file_prefix": upload_url})
     assert res.json() == match(
         {
             "status": "succeeded",
-            "output": "http://example.com/upload/foo.txt",
+            "output": f"{upload_url}foo.txt",
         }
     )
     assert res.status_code == 200
 
+    # Verify that the request was received by the server
+    assert httpserver.log
+    assert httpserver.log[0].data["file"][0] == "foo.txt"
+    assert httpserver.log[0].data["file"][1] == b"hello"
 
-@responses.activate
+
 @uses_predictor_with_client_options("output_file_named", upload_url="https://dontuseme")
-def test_output_file_to_http_with_upload_url_specified(client, match):
-    # Ensure that even when --upload-url is provided on the command line,
-    # uploads continue to go to the specified output_file_prefix, for backwards
-    # compatibility.
-    responses.add(
-        responses.PUT,
-        "http://example.com/upload/foo.txt",
-        status=201,
-        match=[multipart_matcher({"file": ("foo.txt", b"hello")})],
-    )
+def test_output_file_to_http_with_upload_url_specified(client, match, httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/upload/foo.txt",
+        method="PUT",
+        data={"file": ("foo.txt", b"hello")},
+    ).respond_with_data(status=201)
 
     res = client.post(
-        "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
+        "/predictions", json={"output_file_prefix": httpserver.url_for("/upload/")}
     )
     assert res.json() == match(
         {
             "status": "succeeded",
-            "output": "http://example.com/upload/foo.txt",
+            "output": f"{httpserver.url_for('/upload/')}foo.txt",
         }
     )
     assert res.status_code == 200
@@ -83,25 +80,21 @@ def test_output_path(client):
     assert len(base64.b64decode(b64data)) == 195894
 
 
-@responses.activate
 @uses_predictor("output_path_text")
-def test_output_path_to_http(client, match):
-    fh = io.BytesIO(b"hello")
-    fh.name = "file.txt"
-    responses.add(
-        responses.PUT,
-        "http://example.com/upload/file.txt",
-        status=201,
-        match=[multipart_matcher({"file": fh})],
-    )
+def test_output_path_to_http(client, match, httpserver: HTTPServer):
+    httpserver.expect_request(
+        "/upload/file.txt",
+        method="PUT",
+        data={"file": ("file.txt", b"hello")},
+    ).respond_with_data(status=201)
 
     res = client.post(
-        "/predictions", json={"output_file_prefix": "http://example.com/upload/"}
+        "/predictions", json={"output_file_prefix": httpserver.url_for("/upload/")}
     )
     assert res.json() == match(
         {
             "status": "succeeded",
-            "output": "http://example.com/upload/file.txt",
+            "output": f"{httpserver.url_for('/upload/')}file.txt",
         }
     )
     assert res.status_code == 200
