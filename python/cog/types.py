@@ -330,11 +330,8 @@ if PYDANTIC_V2:
 
             schema = core_schema.json_or_python_schema(
                 json_schema=core_schema.str_schema(),
-                python_schema=core_schema.union_schema(
-                    [
-                        core_schema.no_info_plain_validator_function(cls.validate),
-                        core_schema.is_instance_schema(cls),
-                    ]
+                python_schema=core_schema.no_info_plain_validator_function(
+                    cls.validate,
                 ),
                 serialization=core_schema.plain_serializer_function_ser_schema(
                     cls.serialize,
@@ -357,6 +354,8 @@ if PYDANTIC_V2:
 
         @classmethod
         def validate(cls, value: Any) -> "File":
+            if isinstance(value, bytes):
+                return cls.validate(io.BytesIO(value))
             if isinstance(value, str):
                 parsed_url = urllib.parse.urlparse(value)
                 if parsed_url.scheme not in ["http", "https", "data"]:
@@ -599,11 +598,8 @@ if PYDANTIC_V2:
 
             schema = core_schema.json_or_python_schema(
                 json_schema=core_schema.str_schema(),
-                python_schema=core_schema.union_schema(
-                    [
-                        core_schema.no_info_plain_validator_function(cls.validate),
-                        core_schema.is_instance_schema(cls),
-                    ]
+                python_schema=core_schema.no_info_plain_validator_function(
+                    cls.validate,
                 ),
                 serialization=core_schema.plain_serializer_function_ser_schema(
                     cls.serialize,
@@ -633,7 +629,6 @@ if PYDANTIC_V2:
             if isinstance(value, str):
                 if value.startswith(("data:", "http:", "https:")):
                     return File(url=value)  # type: ignore
-
             if isinstance(value, cls):
                 return value  # type: ignore
             if isinstance(value, (str, pathlib.Path)):

@@ -5,64 +5,52 @@ import pickle
 from unittest.mock import MagicMock, patch
 
 import pytest
-import responses
 from cog.types import PYDANTIC_V2, File, Secret, URLFile, get_filename
 from pydantic import TypeAdapter
 
 
-@responses.activate
-def test_urlfile_acts_like_response():
-    responses.get(
-        "https://example.com/some/url",
-        json={"message": "hello world"},
-        status=200,
+def test_urlfile_acts_like_response(httpserver):
+    httpserver.expect_request("/some/url").respond_with_json(
+        {"message": "hello world"}, status=200
     )
 
-    u = URLFile("https://example.com/some/url")
+    u = URLFile(httpserver.url_for("/some/url"))
 
     assert isinstance(u, io.IOBase) or PYDANTIC_V2
-    assert u.read() == b'{"message": "hello world"}'
+    assert json.loads(u.read()) == {"message": "hello world"}
 
 
-@responses.activate
-def test_urlfile_iterable():
-    responses.get(
-        "https://example.com/some/url",
-        body="one\ntwo\nthree\n",
-        status=200,
+def test_urlfile_iterable(httpserver):
+    httpserver.expect_request("/some/url").respond_with_data(
+        "one\ntwo\nthree\n", status=200
     )
 
-    u = URLFile("https://example.com/some/url")
+    u = URLFile(httpserver.url_for("/some/url"))
     result = list(u)
 
     assert result == [b"one\n", b"two\n", b"three\n"]
 
 
-@responses.activate
-def test_urlfile_no_request_if_not_used():
-    # This test would be failed by responses if the request were actually made,
-    # as we've not registered the handler for it.
-    URLFile("https://example.com/some/url")
+def test_urlfile_no_request_if_not_used(httpserver):
+    # This test would fail if the request were actually made,
+    # as we've not set up an expectation for it.
+    URLFile(httpserver.url_for("/some/url"))
 
 
-@responses.activate
-def test_urlfile_can_be_pickled():
-    u = URLFile("https://example.com/some/url")
+def test_urlfile_can_be_pickled(httpserver):
+    u = URLFile(httpserver.url_for("/some/url"))
 
     result = pickle.loads(pickle.dumps(u))
 
     assert isinstance(result, URLFile)
 
 
-@responses.activate
-def test_urlfile_can_be_pickled_even_once_loaded():
-    responses.get(
-        "https://example.com/some/url",
-        json={"message": "hello world"},
-        status=200,
+def test_urlfile_can_be_pickled_even_once_loaded(httpserver):
+    httpserver.expect_request("/some/url").respond_with_json(
+        {"message": "hello world"}, status=200
     )
 
-    u = URLFile("https://example.com/some/url")
+    u = URLFile(httpserver.url_for("/some/url"))
     u.read()
 
     result = pickle.loads(pickle.dumps(u))
@@ -250,57 +238,60 @@ def test_file_fspath(mock_temp_file, httpserver):
 
 
 @pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
-def test_file_validation_with_string_url():
-    url = "https://example.com/file.txt"
-    file = File.validate(url)
-    assert isinstance(file, File)
-    assert file.url == url
-
-
-@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
 def test_file_validation_with_bytes_io():
+    adapter = TypeAdapter(File)
+
     data = b"Hello, World!"
     bytes_io = io.BytesIO(data)
-    file = File.validate(bytes_io)
+
+    file = adapter.validate_python(bytes_io)
     assert isinstance(file, File)
-    assert file.url.startswith("data:application/octet-stream;base64,")
     assert file.data == data
 
-
-@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
-def test_file_validation_with_string_io():
-    data = "Hello, World!"
-    string_io = io.StringIO(data)
-    file = File.validate(string_io)
-    assert isinstance(file, File)
-    assert file.url.startswith("data:text/plain;base64,")
-    assert file.data == data.encode("utf-8")
-
-
-@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
-def test_file_serialization():
-    url = "https://example.com/file.txt"
-    file = File(url=url)
-    assert File.serialize(file) == url
-
-
-@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
-def test_file_serialization_with_data():
-    data = b"Hello, World!"
-    file = File()
-    file._data = data
-    serialized = File.serialize(file)
+    serialized = json.loads(adapter.dump_json(file))
     assert serialized.startswith("data:application/octet-stream;base64,")
     assert base64.b64decode(serialized.split(",")[1]) == data
 
 
 @pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
-def test_file_pydantic_integration():
-    url = "https://example.com/file.txt"
+def test_file_validation_with_string_io():
+    adapter = TypeAdapter(File)
+
+    data = "Hello, World!"
+    string_io = io.StringIO(data)
+    file = adapter.validate_python(string_io)
+
+    assert isinstance(file, File)
+    assert file.data == data.encode("utf-8")
+
+    serialized = json.loads(adapter.dump_json(file))
+    assert serialized.startswith("data:text/plain;base64,")
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_serialization_with_data():
+    adapter = TypeAdapter(File)
+
+    data = b"Hello, World!"
+    file = adapter.validate_python(data)
+
+    assert isinstance(file, File)
+    assert file.data == data
+
+    serialized = json.loads(adapter.dump_json(file))
+    assert serialized.startswith("data:application/octet-stream;base64,")
+    assert base64.b64decode(serialized.split(",")[1]) == data
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_validation_with_url(httpserver):
+    httpserver.expect_request("/foo.txt").respond_with_data("hello")
+
+    url = httpserver.url_for("/foo.txt")
     adapter = TypeAdapter(File)
     file = adapter.validate_python(url)
     assert isinstance(file, File)
     assert file.url == url
 
-    serialized = adapter.dump_json(file)
-    assert json.loads(serialized) == url
+    serialized = json.loads(adapter.dump_json(file))
+    assert serialized == url
