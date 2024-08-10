@@ -34,7 +34,7 @@ PREDICTOR_FIXTURES = [
     ("output_numpy", "Predictor", "predict"),
     ("output_iterator_complex", "Predictor", "predict"),
     ("yield_concatenate_iterator", "Predictor", "predict"),
-    ("yield_files", "Predictor", "predict"),
+    ("yield_paths", "Predictor", "predict"),
     ("yield_strings_file_input", "Predictor", "predict"),
     ("yield_strings", "Predictor", "predict"),
 ]
