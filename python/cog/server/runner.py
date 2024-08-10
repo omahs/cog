@@ -391,7 +391,7 @@ def _predict(  # pylint: disable=too-many-branches
     should_cancel: threading.Event,
 ) -> schema.PredictionResponse:
     if PYDANTIC_V2:
-        initial_prediction = request.model_dump()
+        initial_prediction = types.unwrap_sis(request.model_dump())
     else:
         initial_prediction = request.dict()
 

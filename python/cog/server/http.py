@@ -36,7 +36,7 @@ from ..predictor import (
     load_config,
     load_slim_predictor_from_ref,
 )
-from ..types import PYDANTIC_V2, CogConfig
+from ..types import PYDANTIC_V2, CogConfig, unwrap_sis
 from .runner import (
     PredictionRunner,
     RunnerBusyError,
@@ -485,7 +485,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals,too-many-s
             return JSONResponse(jsonable_encoder(initial_response), status_code=202)
 
         response_object = (
-            async_result.get().model_dump()
+            unwrap_sis(async_result.get().model_dump())
             if PYDANTIC_V2
             else async_result.get().dict()
         )
