@@ -1,10 +1,8 @@
 import base64
-import io
+import json
 
-import pytest
-from pytest_httpserver import HTTPServer
 from cog.types import PYDANTIC_V2
-from responses.matchers import multipart_matcher
+from pytest_httpserver import HTTPServer
 
 from .conftest import uses_predictor, uses_predictor_with_client_options
 
@@ -15,8 +13,8 @@ def test_return_wrong_type(client):
     assert resp.status_code == 500
 
 
-@uses_predictor("output_file")
-def test_output_file(client, match):
+@uses_predictor("output_file_string")
+def test_output_file_string(client, match):
     res = client.post("/predictions")
     assert res.status_code == 200
     assert res.json() == match(
@@ -25,6 +23,16 @@ def test_output_file(client, match):
             "output": "data:application/octet-stream;base64,aGVsbG8=",  # hello
         }
     )
+
+
+@uses_predictor("output_file_image")
+def test_output_file_image(client):
+    res = client.post("/predictions")
+    assert res.status_code == 200
+    header, b64data = res.json()["output"].split(",", 1)
+    # need both image/bmp and image/x-ms-bmp until https://bugs.python.org/issue44211 is fixed
+    assert header in ["data:application/octet-stream;base64"]
+    assert len(base64.b64decode(b64data)) == 195075
 
 
 @uses_predictor("output_file_named")
@@ -51,11 +59,13 @@ def test_output_file_to_http(client, match, httpserver: HTTPServer):
 
 
 @uses_predictor_with_client_options("output_file_named", upload_url="https://dontuseme")
-def test_output_file_to_http_with_upload_url_specified(client, match, httpserver: HTTPServer):
+def test_output_file_to_http_with_upload_url_specified(
+    client, match, httpserver: HTTPServer
+):
     httpserver.expect_request(
         "/upload/foo.txt",
         method="PUT",
-        data={"file": ("foo.txt", b"hello")},
+        data=json.dumps({"file": ("foo.txt", b"hello")}),
     ).respond_with_data(status=201)
 
     res = client.post(
@@ -74,10 +84,8 @@ def test_output_file_to_http_with_upload_url_specified(client, match, httpserver
 def test_output_path(client):
     res = client.post("/predictions")
     assert res.status_code == 200
-    header, b64data = res.json()["output"].split(",", 1)
-    # need both image/bmp and image/x-ms-bmp until https://bugs.python.org/issue44211 is fixed
-    assert header in ["data:image/bmp;base64", "data:image/x-ms-bmp;base64"]
-    assert len(base64.b64decode(b64data)) == 195894
+    data = res.json()["output"]
+    assert len(data) == 195894
 
 
 @uses_predictor("output_path_text")

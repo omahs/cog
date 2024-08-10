@@ -538,7 +538,7 @@ def test_asynchronous_prediction_endpoint(client, match):
 # End-to-end test for passing tracing headers on to downstream services.
 @responses.activate
 @uses_predictor_with_client_options(
-    "output_file", upload_url="https://example.com/upload"
+    "output_file_string", upload_url="https://example.com/upload"
 )
 def test_asynchronous_prediction_endpoint_with_trace_context(client, match):
     webhook = responses.post(

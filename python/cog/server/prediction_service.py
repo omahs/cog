@@ -430,7 +430,10 @@ def _prepare_predict_payload(
     prediction_input: Union[BaseInput, Dict[str, Any]],
 ) -> Dict[str, Any]:
     if isinstance(prediction_input, BaseInput):
-        input_dict = prediction_input.dict()
+        if PYDANTIC_V2:
+            input_dict = prediction_input.model_dump()
+        else:
+            input_dict = prediction_input.dict()
     else:
         input_dict = prediction_input.copy()
 
