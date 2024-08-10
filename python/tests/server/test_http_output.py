@@ -114,7 +114,6 @@ def test_complex_output(client, match):
     assert resp.status_code == 200
 
     json = resp.json()
-    print("!!!", json)
     assert (
         json["output"]["file"] == "data:application/octet-stream;base64,aGVsbG8="
         or json["output"]["file"] == "data:text/plain;base64,aGVsbG8="

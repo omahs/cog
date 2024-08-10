@@ -216,33 +216,34 @@ if PYDANTIC_V2:
             self.url = url
 
             if url and url.startswith("data:"):
-                # Handle data URL
-                header, encoded = url.split(",", 1)
-                self._data = base64.b64decode(encoded)
+                try:
+                    header, encoded = url.split(",", 1)
+                    encoding = "base64" if ";base64" in header else None
+                    self._data = (
+                        base64.b64decode(encoded)
+                        if encoding == "base64"
+                        else urllib.parse.unquote_to_bytes(encoded)
+                    )
 
-                if content_type is None:
-                    self.content_type = header.split(";")[0].split(":")[1]
-                else:
-                    self.content_type = content_type
+                    if content_type is None:
+                        mime_type = header.split(";")[0].split(":", 1)
+                        content_type = (
+                            mime_type[1] if len(mime_type) > 1 else "text/plain"
+                        )
+                except (ValueError, IndexError):
+                    raise ValueError("Invalid data URL format") from None
 
-                if file_name is None:
-                    self.file_name = "data_file"  # Default name for data URL
-                else:
-                    self.file_name = file_name
             else:
-                # Handle regular URL or no URL
-                if content_type is None and url:
-                    # Attempt to derive content_type from URL
-                    _, ext = os.path.splitext(url)
-                    self.content_type = mimetypes.guess_type(ext)[0]
-                else:
-                    self.content_type = content_type
+                parsed_url = urllib.parse.urlparse(url)
+                if parsed_url:
+                    path = urllib.parse.unquote(parsed_url.path)
+                    if content_type is None and path:
+                        content_type = mimetypes.guess_type(path.split("/")[-1])[0]
+                    if file_name is None and path:
+                        file_name = os.path.basename(path)
 
-                if file_name is None and url:
-                    # Derive file_name from URL if not provided
-                    self.file_name = os.path.basename(url)
-                else:
-                    self.file_name = file_name
+            self.content_type = content_type or "application/octet-stream"
+            self.file_name = file_name
 
         @property
         def data(self) -> bytes:
@@ -257,6 +258,9 @@ if PYDANTIC_V2:
                 resp.raw.decode_content = True
                 return resp.raw.read()
             raise ValueError("No data or URL provided")
+
+        def __str__(self) -> str:
+            return self.url or ""
 
         def __enter__(self) -> "File":
             return self  # type: ignore
@@ -326,8 +330,11 @@ if PYDANTIC_V2:
 
             schema = core_schema.json_or_python_schema(
                 json_schema=core_schema.str_schema(),
-                python_schema=core_schema.no_info_plain_validator_function(
-                    cls.validate,
+                python_schema=core_schema.union_schema(
+                    [
+                        core_schema.no_info_plain_validator_function(cls.validate),
+                        core_schema.is_instance_schema(cls),
+                    ]
                 ),
                 serialization=core_schema.plain_serializer_function_ser_schema(
                     cls.serialize,
@@ -372,13 +379,23 @@ if PYDANTIC_V2:
         def serialize(cls, value: "File") -> str:
             if hasattr(value, "url") and value.url:
                 return value.url  # type: ignore
-            if hasattr(value, "_data") and value._data:
+            if hasattr(value, "data") and value.data:
                 # If there's no URL but we have data, create a data URL
-                encoded = base64.b64encode(value._data).decode()
+                encoded = base64.b64encode(value.data).decode()
                 mime_type = value.content_type or "application/octet-stream"
                 return f"data:{mime_type};base64,{encoded}"
             else:
                 raise ValueError("File has no URL or data to serialize")
+
+        def __iter__(self) -> Iterator[bytes]:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            with tempfile.NamedTemporaryFile(mode="w+b", delete=False) as temp_file:
+                temp_file.write(self.data)
+                temp_file.flush()
+                temp_file.seek(0)
+                yield from temp_file
+            os.unlink(temp_file.name)
 
     # https://github.com/pydantic/pydantic/issues/7779#issuecomment-1775629521
     _ = TypeAdapter(File)
@@ -582,9 +599,11 @@ if PYDANTIC_V2:
 
             schema = core_schema.json_or_python_schema(
                 json_schema=core_schema.str_schema(),
-                python_schema=core_schema.no_info_after_validator_function(
-                    cls.validate,
-                    core_schema.str_schema(),
+                python_schema=core_schema.union_schema(
+                    [
+                        core_schema.no_info_plain_validator_function(cls.validate),
+                        core_schema.is_instance_schema(cls),
+                    ]
                 ),
                 serialization=core_schema.plain_serializer_function_ser_schema(
                     cls.serialize,
@@ -660,6 +679,8 @@ if PYDANTIC_V2:
         def __str__(self) -> str:
             return self.source
 
+    class URLFile(File):  # type: ignore
+        pass
 
 else:
 
@@ -693,7 +714,12 @@ else:
             # https://json-schema.org/understanding-json-schema/reference/string.html#uri-template
             field_schema.update(type="string", format="uri")
 
-    class Path(pathlib.PosixPath):  # pylint: disable=abstract-method
+        def __iter__(self) -> Iterator[bytes]:
+            if self._closed:
+                raise ValueError("I/O operation on closed file")
+            return iter(self.data)
+
+    class Path(metaclass=PosixPathMeta):  # type: ignore
         validate_always = True
 
         @classmethod
@@ -813,32 +839,33 @@ else:
 
             return f"<{type(self).__name__} at 0x{id(self):x} wrapping {target!r}>"
 
-    def get_filename(url: str) -> str:
-        parsed_url = urllib.parse.urlparse(url)
 
-        if parsed_url.scheme == "data":
-            with urllib.request.urlopen(url) as resp:  # noqa: S310
-                mime_type = resp.headers.get_content_type()
-                extension = mimetypes.guess_extension(mime_type)
-                if extension is None:
-                    return "file"
-                return "file" + extension
+def get_filename(url: str) -> str:
+    parsed_url = urllib.parse.urlparse(url)
 
-        basename = os.path.basename(parsed_url.path)
-        basename = urllib.parse.unquote_plus(basename)
+    if parsed_url.scheme == "data":
+        with urllib.request.urlopen(url) as resp:  # noqa: S310
+            mime_type = resp.headers.get_content_type()
+            extension = mimetypes.guess_extension(mime_type)
+            if extension is None:
+                return "file"
+            return "file" + extension
 
-        # If the filename is too long, we truncate it (appending '~' to denote the
-        # truncation) while preserving the file extension.
-        # - truncate it
-        # - append a tilde
-        # - preserve the file extension
-        if _len_bytes(basename) > FILENAME_MAX_LENGTH:
-            basename = _truncate_filename_bytes(basename, length=FILENAME_MAX_LENGTH)
+    basename = os.path.basename(parsed_url.path)
+    basename = urllib.parse.unquote_plus(basename)
 
-        for c in FILENAME_ILLEGAL_CHARS:
-            basename = basename.replace(c, "_")
+    # If the filename is too long, we truncate it (appending '~' to denote the
+    # truncation) while preserving the file extension.
+    # - truncate it
+    # - append a tilde
+    # - preserve the file extension
+    if _len_bytes(basename) > FILENAME_MAX_LENGTH:
+        basename = _truncate_filename_bytes(basename, length=FILENAME_MAX_LENGTH)
 
-        return basename
+    for c in FILENAME_ILLEGAL_CHARS:
+        basename = basename.replace(c, "_")
+
+    return basename
 
 
 def _len_bytes(s: str, encoding: str = "utf-8") -> int:

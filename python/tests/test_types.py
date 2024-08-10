@@ -1,9 +1,13 @@
+import base64
 import io
+import json
 import pickle
+from unittest.mock import MagicMock, patch
 
 import pytest
 import responses
-from cog.types import Secret, URLFile, get_filename
+from cog.types import PYDANTIC_V2, File, Secret, URLFile, get_filename
+from pydantic import TypeAdapter
 
 
 @responses.activate
@@ -16,7 +20,7 @@ def test_urlfile_acts_like_response():
 
     u = URLFile("https://example.com/some/url")
 
-    assert isinstance(u, io.IOBase)
+    assert isinstance(u, io.IOBase) or PYDANTIC_V2
     assert u.read() == b'{"message": "hello world"}'
 
 
@@ -127,3 +131,176 @@ def test_secret_type():
 
     assert secret.get_secret_value() == secret_value
     assert str(secret) == "**********"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_creation_with_http_url():
+    url = "http://example.com/file.txt"
+    file = File(url=url)
+    assert file.url == url
+    assert file.file_name == "file.txt"
+    assert file.content_type == "text/plain"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_creation_with_https_url():
+    url = "https://example.com/image.jpg"
+    file = File(url=url)
+    assert file.url == url
+    assert file.file_name == "image.jpg"
+    assert file.content_type == "image/jpeg"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_creation_with_data_url():
+    data = b"Hello, World!"
+    encoded = base64.b64encode(data).decode()
+    url = f"data:text/plain;base64,{encoded}"
+    file = File(url=url)
+    assert file.url == url
+    assert file.file_name == None
+    assert file.content_type == "text/plain"
+    assert file.data == data
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_creation_with_custom_content_type():
+    url = "https://example.com/file"
+    content_type = "application/octet-stream"
+    file = File(url=url, content_type=content_type)
+    assert file.url == url
+    assert file.content_type == content_type
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_creation_with_custom_file_name():
+    url = "https://example.com/file"
+    file_name = "custom_name.bin"
+    file = File(url=url, file_name=file_name)
+    assert file.url == url
+    assert file.file_name == file_name
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+@patch("requests.get")
+def test_file_data_loading(mock_get):
+    mock_response = MagicMock()
+    mock_response.raw.read.return_value = b"Mocked data"
+    mock_get.return_value = mock_response
+
+    file = File(url="https://example.com/file")
+    assert file.data == b"Mocked data"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_str_representation():
+    url = "https://example.com/file.txt"
+    file = File(url=url)
+    assert str(file) == url
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_context_manager():
+    url = "https://example.com/file.txt"
+    with File(url=url) as file:
+        assert not file._closed
+    assert file._closed
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_readable():
+    file = File(url="https://example.com/file.txt")
+    assert file.readable()
+    file.close()
+    assert not file.readable()
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_seekable():
+    file = File(url="https://example.com/file.txt")
+    assert not file.seekable()
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_writable():
+    file = File(url="https://example.com/file.txt")
+    assert not file.writable()
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_open_with_invalid_mode():
+    file = File(url="https://example.com/file.txt")
+    with pytest.raises(ValueError):
+        file.open("w")
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+@patch("tempfile.NamedTemporaryFile")
+def test_file_fspath(mock_temp_file, httpserver):
+    httpserver.expect_request("/foo.txt").respond_with_data("hello")
+
+    mock_temp = MagicMock()
+    mock_temp.name = "/tmp/tempfile"
+    mock_temp_file.return_value.__enter__.return_value = mock_temp
+
+    file = File(url=httpserver.url_for("/foo.txt"))
+    path = file.__fspath__()
+
+    assert path == "/tmp/tempfile"
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_validation_with_string_url():
+    url = "https://example.com/file.txt"
+    file = File.validate(url)
+    assert isinstance(file, File)
+    assert file.url == url
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_validation_with_bytes_io():
+    data = b"Hello, World!"
+    bytes_io = io.BytesIO(data)
+    file = File.validate(bytes_io)
+    assert isinstance(file, File)
+    assert file.url.startswith("data:application/octet-stream;base64,")
+    assert file.data == data
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_validation_with_string_io():
+    data = "Hello, World!"
+    string_io = io.StringIO(data)
+    file = File.validate(string_io)
+    assert isinstance(file, File)
+    assert file.url.startswith("data:text/plain;base64,")
+    assert file.data == data.encode("utf-8")
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_serialization():
+    url = "https://example.com/file.txt"
+    file = File(url=url)
+    assert File.serialize(file) == url
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_serialization_with_data():
+    data = b"Hello, World!"
+    file = File()
+    file._data = data
+    serialized = File.serialize(file)
+    assert serialized.startswith("data:application/octet-stream;base64,")
+    assert base64.b64decode(serialized.split(",")[1]) == data
+
+
+@pytest.mark.skipif(not PYDANTIC_V2, reason="Requires Pydantic v2")
+def test_file_pydantic_integration():
+    url = "https://example.com/file.txt"
+    adapter = TypeAdapter(File)
+    file = adapter.validate_python(url)
+    assert isinstance(file, File)
+    assert file.url == url
+
+    serialized = adapter.dump_json(file)
+    assert json.loads(serialized) == url

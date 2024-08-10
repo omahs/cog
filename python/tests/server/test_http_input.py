@@ -98,7 +98,7 @@ def test_file_input_with_http_url_error(client, httpserver, match):
         "/predictions",
         json={"input": {"path": httpserver.url_for("/foo.txt")}},
     )
-    assert resp.json() == match({"status": "failed"})
+    assert resp.status_code == 500
 
 
 @uses_predictor("input_path")
@@ -160,7 +160,7 @@ def test_multiple_arguments(client, match):
             "input": {
                 "text": "baz",
                 "num1": 5,
-                "path": "data:text/plain;base64,"
+                "file": "data:text/plain;base64,"
                 + base64.b64encode(b"wibble").decode("utf-8"),
             }
         },

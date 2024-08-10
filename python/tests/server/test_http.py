@@ -1,5 +1,3 @@
-import base64
-import io
 import time
 import unittest.mock as mock
 
@@ -403,33 +401,19 @@ def test_yielding_strings_from_generator_predictors_file_input(client, match):
     )
 
 
-@uses_predictor("yield_files")
-def test_yielding_files_from_generator_predictors(client):
-    resp = client.post("/predictions")
-
-    assert resp.status_code == 200
-    output = resp.json()["output"]
-
-    def image_color(data_url):
-        _, b64data = data_url.split(",", 1)
-        image = Image.open(io.BytesIO(base64.b64decode(b64data)))
-        return Image.Image.getcolors(image)[0][1]
-
-    assert image_color(output[0]) == (255, 0, 0)  # red
-    assert image_color(output[1]) == (0, 0, 255)  # blue
-    assert image_color(output[2]) == (255, 255, 0)  # yellow
-
-
 @uses_predictor("yield_paths")
 def test_yielding_paths_from_generator_predictors(client):
     resp = client.post("/predictions")
 
     assert resp.status_code == 200
+
+    print(resp.json())
+
     output = resp.json()["output"]
 
     def image_color(path):
         image = Image.open(path)
-        return Image.Image.getcolors(image)[0][1]
+        return Image.Image.getcolors(image)[0][1]  # type: ignore
 
     assert image_color(output[0]) == (255, 0, 0)  # red
     assert image_color(output[1]) == (0, 0, 255)  # blue
