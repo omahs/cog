@@ -380,7 +380,8 @@ RUN curl -s -S -L https://raw.githubusercontent.com/pyenv/pyenv-installer/master
 	pyenv install-latest "%s" && \
 	pyenv global $(pyenv install-latest --print "%s") && \
 	pip install --no-cache-dir "wheel<1"`, py, py) + `
-RUN rm -rf /usr/bin/python3 && ln -s ` + "`realpath \\`pyenv which python\\`` /usr/bin/python3 && chmod +x /usr/bin/python3", nil
+RUN rm -rf /usr/bin/python3 && ln -s ` + "`realpath \\`pyenv which python\\``" + ` /usr/bin/python3 && chmod +x /usr/bin/python3
+RUN rm -rf /usr/bin/pip && ln -s ` + "`realpath \\`pyenv which pip\\``" + ` /usr/bin/pip && chmod +x /usr/bin/pip`, nil
 	// for sitePackagesLocation, kind of need to determine which specific version latest is (3.8 -> 3.8.17 or 3.8.18)
 	// install-latest essentially does pyenv install --list | grep $py | tail -1
 	// there are many bad options, but a symlink to $(pyenv prefix) is the least bad one
