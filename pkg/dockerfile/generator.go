@@ -311,8 +311,8 @@ func (g *Generator) installTini() string {
 	// image label applied in image/build.go.
 	lines := []string{
 		`RUN --mount=type=cache,target=/var/cache/apt,sharing=locked set -eux; \
-apt-get update -qq && \
-apt-get install -qqy --no-install-recommends curl; \
+apt-get -o DPkg::Lock::Timeout=60 update -qq && \
+apt-get -o DPkg::Lock::Timeout=60 install -qqy --no-install-recommends curl; \
 rm -rf /var/lib/apt/lists/*; \
 TINI_VERSION=v0.19.0; \
 TINI_ARCH="$(dpkg --print-architecture)"; \
@@ -335,7 +335,7 @@ func (g *Generator) aptInstalls() (string, error) {
 		})
 	}
 
-	return "RUN --mount=type=cache,target=/var/cache/apt,sharing=locked apt-get update -qq && apt-get install -qqy " +
+	return "RUN --mount=type=cache,target=/var/cache/apt,sharing=locked apt-get -o DPkg::Lock::Timeout=60 update -qq && apt-get -o DPkg::Lock::Timeout=60 install -qqy " +
 		strings.Join(packages, " ") +
 		" && rm -rf /var/lib/apt/lists/*", nil
 }
@@ -352,7 +352,7 @@ func (g *Generator) installPythonCUDA() (string, error) {
 
 	py := g.Config.Build.PythonVersion
 	return `ENV PATH="/root/.pyenv/shims:/root/.pyenv/bin:$PATH"
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked apt-get update -qq && apt-get install -qqy --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked apt-get -o DPkg::Lock::Timeout=60 update -qq && apt-get -o DPkg::Lock::Timeout=60 install -qqy --no-install-recommends \
 	make \
 	build-essential \
 	libssl-dev \
